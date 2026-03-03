@@ -9,62 +9,57 @@
 /// ```dart
 /// import 'package:zendesk_messaging/zendesk_messaging.dart';
 ///
-/// // Initialize
+/// // 1. Initialize
 /// await ZendeskMessaging.initialize(
 ///   androidChannelKey: 'your_android_key',
 ///   iosChannelKey: 'your_ios_key',
 /// );
 ///
-/// // Show messaging UI
-/// await ZendeskMessaging.show();
-/// ```
-///
-/// ## Event Handling
-///
-/// ```dart
+/// // 2. Subscribe to events
 /// ZendeskMessaging.eventStream.listen((event) {
-///   switch (event) {
-///     case UnreadMessageCountChanged(:final totalUnreadCount):
-///       print('Unread: $totalUnreadCount');
-///     case AuthenticationFailed(:final isJwtExpired):
-///       if (isJwtExpired) refreshToken();
-///     default:
-///       break;
+///   if (event is UnreadMessageCountChanged) {
+///     print('Unread: ${event.totalUnreadCount}');
 ///   }
 /// });
 ///
+/// // 3. Start listening (required to receive UnreadMessageCountChanged)
 /// await ZendeskMessaging.listenUnreadMessages();
+///
+/// // 4. Show messaging UI
+/// await ZendeskMessaging.show();
 /// ```
 ///
-/// ## Logging Configuration
+/// ## View Mode & Exit Action (iOS)
 ///
 /// ```dart
-/// // Enable/disable logging
-/// ZendeskMessagingConfig.enableLogging = true;
+/// // Sheet presentation with back-to-list navigation
+/// await ZendeskMessaging.show(
+///   viewMode: ZendeskViewMode.pageSheet,
+///   exitAction: ZendeskExitAction.returnToConversationList,
+/// );
 ///
-/// // Use custom logger
-/// ZendeskMessagingConfig.logger = (message, {error, stackTrace}) {
-///   MyLogger.log(message, error: error);
-/// };
+/// // Specific conversation from a list
+/// await ZendeskMessaging.showConversation(
+///   conversationId: 'conv_abc123',
+///   exitAction: ZendeskExitAction.returnToConversationList,
+/// );
 /// ```
 library zendesk_messaging;
 
 // Enums
 export 'src/enums/authentication_type.dart';
 export 'src/enums/connection_status.dart';
+export 'src/enums/exit_action.dart';
 export 'src/enums/push_responsibility.dart';
-
+export 'src/enums/view_mode.dart';
+export 'src/events/event_parser.dart';
+// Events (zendesk_event.dart includes all event classes via part files)
+export 'src/events/zendesk_event.dart';
 // Models
 export 'src/models/zendesk_login_response.dart';
 export 'src/models/zendesk_message.dart';
 export 'src/models/zendesk_user.dart';
-
-// Events (zendesk_event.dart includes all event classes via part files)
-export 'src/events/zendesk_event.dart';
-export 'src/events/event_parser.dart';
-
-// Config
-export 'src/zendesk_messaging_config.dart';
-
 // Main API
 export 'src/zendesk_messaging.dart';
+// Config
+export 'src/zendesk_messaging_config.dart';

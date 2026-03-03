@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'enums/connection_status.dart';
+import 'enums/exit_action.dart';
 import 'enums/push_responsibility.dart';
+import 'enums/view_mode.dart';
 import 'events/event_parser.dart';
 import 'events/zendesk_event.dart';
 import 'models/zendesk_login_response.dart';
@@ -15,7 +17,7 @@ import 'zendesk_messaging_config.dart';
 ///
 /// Provides access to Zendesk Messaging functionality including:
 /// - User authentication (login/logout)
-/// - Messaging UI display
+/// - Messaging UI display (with view mode and exit action on iOS)
 /// - Multi-conversation navigation
 /// - Unread message count tracking
 /// - Event streams for various SDK events
@@ -30,13 +32,30 @@ import 'zendesk_messaging_config.dart';
 ///   iosChannelKey: 'your_ios_key',
 /// );
 ///
-/// // Show messaging UI
+/// // Show messaging UI (full-screen, default)
 /// await ZendeskMessaging.show();
+///
+/// // Show as a page sheet on iOS, return to list on exit
+/// await ZendeskMessaging.show(
+///   viewMode: ZendeskViewMode.pageSheet,
+///   exitAction: ZendeskExitAction.returnToConversationList,
+/// );
 ///
 /// // Listen to events
 /// ZendeskMessaging.eventStream.listen((event) {
-///   // Handle events
+///   switch (event) {
+///     case UnreadMessageCountChanged(:final totalUnreadCount):
+///       print('Unread: $totalUnreadCount');
+///     case AuthenticationFailed(:final isJwtExpired):
+///       if (isJwtExpired) refreshToken();
+///     case MessagingClosed():
+///       onChatClosed();
+///     default:
+///       break;
+///   }
 /// });
+///
+/// await ZendeskMessaging.listenUnreadMessages();
 /// ```
 ///
 /// ## Error Handling
@@ -64,20 +83,17 @@ class ZendeskMessaging {
   static const MethodChannel _channel = MethodChannel('zendesk_messaging');
 
   // Stream controllers
-  static final StreamController<int> _unreadMessagesCountController =
-      StreamController<int>.broadcast();
-  static final StreamController<ZendeskEvent> _eventController =
-      StreamController<ZendeskEvent>.broadcast();
+  static final StreamController<int> _unreadMessagesCountController = StreamController<int>.broadcast();
+  static final StreamController<ZendeskEvent> _eventController = StreamController<ZendeskEvent>.broadcast();
 
-  /// Stream of unread message count changes.
+  /// Legacy stream of unread message count changes.
   ///
-  /// This is a legacy API maintained for backwards compatibility.
+  /// Maintained for backwards compatibility.
   /// For new code, prefer using [eventStream] and listening for
   /// [UnreadMessageCountChanged] events.
-  static Stream<int> get unreadMessagesCountStream =>
-      _unreadMessagesCountController.stream;
+  static Stream<int> get unreadMessagesCountStream => _unreadMessagesCountController.stream;
 
-  /// Stream of all Zendesk events.
+  /// Broadcast stream of all Zendesk SDK events.
   ///
   /// Listen to this stream to receive all events from the Zendesk SDK.
   /// Use pattern matching to handle specific event types:
@@ -86,9 +102,11 @@ class ZendeskMessaging {
   /// ZendeskMessaging.eventStream.listen((event) {
   ///   switch (event) {
   ///     case UnreadMessageCountChanged(:final totalUnreadCount):
-  ///       print('Unread: $totalUnreadCount');
+  ///       badge.value = totalUnreadCount;
   ///     case AuthenticationFailed(:final errorMessage, :final isJwtExpired):
-  ///       if (isJwtExpired) refreshToken();
+  ///       if (isJwtExpired) refreshAndRelogin();
+  ///     case MessagingClosed():
+  ///       onChatClosed();
   ///     case ConnectionStatusChanged(:final status):
   ///       print('Connection: $status');
   ///     default:
@@ -104,7 +122,7 @@ class ZendeskMessaging {
 
   /// Initialize the Zendesk SDK.
   ///
-  /// Must be called before any other ZendeskMessaging methods.
+  /// Must be called before any other [ZendeskMessaging] methods.
   ///
   /// [androidChannelKey] The Android SDK key from Zendesk Admin Center.
   /// [iosChannelKey] The iOS SDK key from Zendesk Admin Center.
@@ -129,16 +147,12 @@ class ZendeskMessaging {
 
     try {
       _channel.setMethodCallHandler(_onMethodCall);
-      await _channel.invokeMethod('initialize', {
+      await _channel.invokeMethod<void>('initialize', {
         'channelKey': Platform.isAndroid ? androidChannelKey : iosChannelKey,
       });
       ZendeskMessagingConfig.log('SDK initialized successfully');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'initialize failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('initialize failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -148,34 +162,24 @@ class ZendeskMessaging {
   /// Returns `true` if initialized, `false` otherwise.
   static Future<bool> isInitialized() async {
     try {
-      final result = await _channel.invokeMethod<bool>('isInitialized');
-      return result ?? false;
+      return await _channel.invokeMethod<bool>('isInitialized') ?? false;
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'isInitialized failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('isInitialized failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
   /// Invalidate the current Zendesk SDK instance.
   ///
-  /// After calling this method, [initialize] must be called again before
-  /// using any other ZendeskMessaging methods.
-  ///
-  /// Throws [PlatformException] if invalidation fails.
+  /// After calling this, [initialize] must be called again before
+  /// using any other methods. This method is safe to call even when
+  /// the SDK is not initialized.
   static Future<void> invalidate() async {
     try {
-      await _channel.invokeMethod('invalidate');
+      await _channel.invokeMethod<void>('invalidate');
       ZendeskMessagingConfig.log('SDK invalidated');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'invalidate failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('invalidate failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -184,70 +188,95 @@ class ZendeskMessaging {
   // UI Navigation
   // ============================================================================
 
-  /// Show the Zendesk Messaging UI.
+  /// Show the messaging UI for the most recently active conversation.
   ///
-  /// Opens the default messaging interface. If multi-conversations is enabled,
-  /// navigates to the most recent conversation.
+  /// [viewMode] Controls the iOS modal presentation style.
+  /// Ignored on Android (always full-screen Activity).
+  ///
+  /// [exitAction] Controls what happens when the user taps the back/close
+  /// button. Use [ZendeskExitAction.returnToConversationList] when
+  /// multi-conversations is enabled so users can return to the list.
   ///
   /// Throws [PlatformException] if the UI cannot be shown.
-  static Future<void> show() async {
+  static Future<void> show({
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.close,
+  }) async {
     try {
-      await _channel.invokeMethod('show');
+      await _channel.invokeMethod<void>('show', {
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+      });
       ZendeskMessagingConfig.log('Messaging UI shown');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'show failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('show failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Show a specific conversation.
-  ///
-  /// [conversationId] The ID of the conversation to display.
+  /// Show a specific conversation by ID.
   ///
   /// Requires multi-conversations to be enabled in Zendesk Admin Center.
   ///
-  /// Throws [ArgumentError] if conversationId is empty.
+  /// [conversationId] The ID of the conversation to display.
+  ///
+  /// [viewMode] Controls the iOS modal presentation style (ignored on Android).
+  ///
+  /// [exitAction] Controls the back/close button behaviour. Defaults to
+  /// [ZendeskExitAction.returnToConversationList] so users can navigate back
+  /// to the conversation list.
+  ///
+  /// [isClosed] When `true`, the message composer (input field) is hidden,
+  /// preventing new messages in a resolved/closed conversation.
+  ///
+  /// Throws [ArgumentError] if [conversationId] is empty.
   /// Throws [PlatformException] if the conversation cannot be shown.
-  static Future<void> showConversation(String conversationId) async {
+  static Future<void> showConversation(
+    String conversationId, {
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.returnToConversationList,
+    bool isClosed = false,
+  }) async {
     if (conversationId.isEmpty) {
       throw ArgumentError('conversationId cannot be empty');
     }
 
     try {
-      await _channel.invokeMethod('showConversation', {
+      await _channel.invokeMethod<void>('showConversation', {
         'conversationId': conversationId,
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+        'isClosed': isClosed,
       });
-      ZendeskMessagingConfig.log('Showing conversation: $conversationId');
+      ZendeskMessagingConfig.log('Showing conversation: $conversationId (isClosed: $isClosed)');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'showConversation failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('showConversation failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Show the conversation list.
+  /// Show the conversation list screen.
   ///
   /// Displays the list of all conversations for the current user.
   /// Requires multi-conversations to be enabled in Zendesk Admin Center.
   ///
+  /// [viewMode] Controls the iOS modal presentation style (ignored on Android).
+  ///
+  /// [exitAction] Controls the back/close button behaviour.
+  ///
   /// Throws [PlatformException] if the list cannot be shown.
-  static Future<void> showConversationList() async {
+  static Future<void> showConversationList({
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.close,
+  }) async {
     try {
-      await _channel.invokeMethod('showConversationList');
+      await _channel.invokeMethod<void>('showConversationList', {
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+      });
       ZendeskMessagingConfig.log('Conversation list shown');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'showConversationList failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('showConversationList failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -257,17 +286,23 @@ class ZendeskMessaging {
   /// Opens the messaging UI to begin a new conversation.
   /// Requires multi-conversations to be enabled in Zendesk Admin Center.
   ///
+  /// [viewMode] Controls the iOS modal presentation style (ignored on Android).
+  ///
+  /// [exitAction] Controls the back/close button behaviour.
+  ///
   /// Throws [PlatformException] if a new conversation cannot be started.
-  static Future<void> startNewConversation() async {
+  static Future<void> startNewConversation({
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.close,
+  }) async {
     try {
-      await _channel.invokeMethod('startNewConversation');
+      await _channel.invokeMethod<void>('startNewConversation', {
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+      });
       ZendeskMessagingConfig.log('New conversation started');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'startNewConversation failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('startNewConversation failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -278,11 +313,9 @@ class ZendeskMessaging {
 
   /// Login a user with JWT authentication.
   ///
-  /// [jwt] A valid JWT token generated by your backend.
+  /// Returns a [ZendeskLoginResponse] with the user's `id` and `externalId`.
   ///
-  /// Returns a [ZendeskLoginResponse] containing user information.
-  ///
-  /// Throws [ArgumentError] if jwt is empty.
+  /// Throws [ArgumentError] if [jwt] is empty.
   /// Throws [PlatformException] if login fails.
   ///
   /// Example:
@@ -291,23 +324,15 @@ class ZendeskMessaging {
   /// print('Logged in as: ${response.id}');
   /// ```
   static Future<ZendeskLoginResponse> loginUser({required String jwt}) async {
-    if (jwt.isEmpty) {
-      throw ArgumentError('JWT cannot be empty');
-    }
+    if (jwt.isEmpty) throw ArgumentError('JWT cannot be empty');
 
     try {
       final result = await _channel.invokeMethod('loginUser', {'jwt': jwt});
-      final arguments = result == null
-          ? <String, dynamic>{}
-          : Map<String, dynamic>.from(result);
+      final map = result == null ? <String, dynamic>{} : Map<String, dynamic>.from(result as Map);
       ZendeskMessagingConfig.log('User logged in');
-      return ZendeskLoginResponse.fromMap(arguments);
+      return ZendeskLoginResponse.fromMap(map);
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'loginUser failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('loginUser failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -319,14 +344,10 @@ class ZendeskMessaging {
   /// Throws [PlatformException] if logout fails.
   static Future<void> logoutUser() async {
     try {
-      await _channel.invokeMethod('logoutUser');
+      await _channel.invokeMethod<void>('logoutUser');
       ZendeskMessagingConfig.log('User logged out');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'logoutUser failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('logoutUser failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -336,32 +357,23 @@ class ZendeskMessaging {
   /// Returns `true` if logged in, `false` otherwise.
   static Future<bool> isLoggedIn() async {
     try {
-      final result = await _channel.invokeMethod<bool>('isLoggedIn');
-      return result ?? false;
+      return await _channel.invokeMethod<bool>('isLoggedIn') ?? false;
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'isLoggedIn failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('isLoggedIn failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
   /// Get the current user information.
   ///
-  /// Returns a [ZendeskUser] if a user is available, or `null` otherwise.
+  /// Returns a [ZendeskUser] if a user is logged in, or `null` for anonymous.
   static Future<ZendeskUser?> getCurrentUser() async {
     try {
       final result = await _channel.invokeMethod('getCurrentUser');
       if (result == null) return null;
-      return ZendeskUser.fromMap(Map<String, dynamic>.from(result));
+      return ZendeskUser.fromMap(Map<String, dynamic>.from(result as Map));
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'getCurrentUser failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('getCurrentUser failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -370,30 +382,19 @@ class ZendeskMessaging {
   // Messages
   // ============================================================================
 
-  /// Get the total unread message count.
-  ///
-  /// Returns the number of unread messages across all conversations.
+  /// Get the total unread message count across all conversations.
   static Future<int> getUnreadMessageCount() async {
     try {
-      final result = await _channel.invokeMethod<int>('getUnreadMessageCount');
-      return result ?? 0;
+      return await _channel.invokeMethod<int>('getUnreadMessageCount') ?? 0;
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'getUnreadMessageCount failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('getUnreadMessageCount failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Get unread message count for a specific conversation.
+  /// Get the unread message count for a specific conversation.
   ///
-  /// [conversationId] The ID of the conversation.
-  ///
-  /// Returns the number of unread messages in the specified conversation.
-  ///
-  /// Throws [ArgumentError] if conversationId is empty.
+  /// Throws [ArgumentError] if [conversationId] is empty.
   static Future<int> getUnreadMessageCountForConversation(
     String conversationId,
   ) async {
@@ -402,37 +403,29 @@ class ZendeskMessaging {
     }
 
     try {
-      final result = await _channel.invokeMethod<int>(
-        'getUnreadMessageCountForConversation',
-        {'conversationId': conversationId},
-      );
-      return result ?? 0;
+      return await _channel.invokeMethod<int>(
+            'getUnreadMessageCountForConversation',
+            {'conversationId': conversationId},
+          ) ??
+          0;
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'getUnreadMessageCountForConversation failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('getUnreadMessageCountForConversation failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Start listening for unread message count changes and other events.
+  /// Start listening for unread message count changes and SDK events.
   ///
-  /// After calling this method, events will be emitted to both
-  /// [unreadMessagesCountStream] (legacy) and [eventStream] (new).
+  /// After calling this, events will be emitted on both [eventStream] and
+  /// the legacy [unreadMessagesCountStream].
   ///
-  /// This method should be called after [initialize].
+  /// Call this after [initialize].
   static Future<void> listenUnreadMessages() async {
     try {
-      await _channel.invokeMethod('listenUnreadMessages');
+      await _channel.invokeMethod<void>('listenUnreadMessages');
       ZendeskMessagingConfig.log('Event listener started');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'listenUnreadMessages failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('listenUnreadMessages failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -441,83 +434,58 @@ class ZendeskMessaging {
   // Conversation Data
   // ============================================================================
 
-  /// Set conversation tags.
-  ///
-  /// Tags are applied when the user starts a new conversation or sends a message.
+  /// Set tags on the active conversation.
   ///
   /// [tags] List of tags to apply to conversations.
   ///
-  /// Throws [ArgumentError] if tags list is empty.
+  /// Throws [ArgumentError] if [tags] list is empty.
   static Future<void> setConversationTags(List<String> tags) async {
-    if (tags.isEmpty) {
-      throw ArgumentError('tags cannot be empty');
-    }
+    if (tags.isEmpty) throw ArgumentError('tags cannot be empty');
 
     try {
-      await _channel.invokeMethod('setConversationTags', {'tags': tags});
+      await _channel.invokeMethod<void>('setConversationTags', {'tags': tags});
       ZendeskMessagingConfig.log('Conversation tags set: $tags');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'setConversationTags failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('setConversationTags failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Clear all conversation tags.
+  /// Clear all tags from the active conversation.
   static Future<void> clearConversationTags() async {
     try {
-      await _channel.invokeMethod('clearConversationTags');
+      await _channel.invokeMethod<void>('clearConversationTags');
       ZendeskMessagingConfig.log('Conversation tags cleared');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'clearConversationTags failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('clearConversationTags failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Set conversation fields.
+  /// Set custom fields on the active conversation.
   ///
-  /// Fields are applied when the user starts a new conversation or sends a message.
-  /// Fields must be configured as custom ticket fields in Zendesk Admin Center.
+  /// Fields must match custom ticket fields configured in Zendesk Admin Center.
   ///
-  /// [fields] Map of field IDs to values.
-  ///
-  /// Throws [ArgumentError] if fields map is empty.
+  /// Throws [ArgumentError] if [fields] is empty.
   static Future<void> setConversationFields(Map<String, String> fields) async {
-    if (fields.isEmpty) {
-      throw ArgumentError('fields cannot be empty');
-    }
+    if (fields.isEmpty) throw ArgumentError('fields cannot be empty');
 
     try {
-      await _channel.invokeMethod('setConversationFields', {'fields': fields});
+      await _channel.invokeMethod<void>('setConversationFields', {'fields': fields});
       ZendeskMessagingConfig.log('Conversation fields set');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'setConversationFields failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('setConversationFields failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Clear all conversation fields.
+  /// Clear all custom fields from the active conversation.
   static Future<void> clearConversationFields() async {
     try {
-      await _channel.invokeMethod('clearConversationFields');
+      await _channel.invokeMethod<void>('clearConversationFields');
       ZendeskMessagingConfig.log('Conversation fields cleared');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'clearConversationFields failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('clearConversationFields failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -526,20 +494,11 @@ class ZendeskMessaging {
   // Connection
   // ============================================================================
 
-  /// Get the current connection status.
+  /// Get the current SDK connection status.
   ///
-  /// Returns the SDK's current connection state.
-  ///
-  /// **Important**: Connection status is only available after the SDK has
-  /// established a connection. The status will be [ZendeskConnectionStatus.unknown]
-  /// until one of these actions triggers a connection:
-  ///
-  /// - Opening the Messaging UI via [show], [showConversation], etc.
-  /// - Logging in a user via [loginUser]
-  /// - Having an active conversation
-  /// - Network state changes while connected
-  ///
-  /// For real-time connection status updates, listen to [eventStream] for
+  /// Returns [ZendeskConnectionStatus.unknown] until the SDK has established
+  /// a connection (by opening messaging UI, logging in, or having an active
+  /// conversation). For real-time updates, listen to [eventStream] for
   /// [ConnectionStatusChanged] events instead of polling this method.
   ///
   /// Example:
@@ -554,11 +513,7 @@ class ZendeskMessaging {
       final result = await _channel.invokeMethod<String>('getConnectionStatus');
       return ZendeskConnectionStatus.fromString(result);
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'getConnectionStatus failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('getConnectionStatus failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -567,55 +522,41 @@ class ZendeskMessaging {
   // Push Notifications
   // ============================================================================
 
-  /// Update the push notification token with Zendesk.
+  /// Register a push notification token with the Zendesk SDK.
   ///
-  /// Call this method when you receive a new FCM token (Android) or
-  /// APNs device token (iOS) to enable push notifications.
-  ///
-  /// [token] The push notification token string.
-  /// - Android: FCM token from FirebaseMessaging.instance.getToken()
-  /// - iOS: APNs device token converted to string
+  /// - **Android**: Pass the FCM registration token string directly.
+  /// - **iOS**: Pass the raw APNs device token as a Base64-encoded string.
   ///
   /// Throws [ArgumentError] if token is empty.
   /// Throws [PlatformException] if the update fails.
   ///
   /// Example:
   /// ```dart
-  /// // Android with firebase_messaging
-  /// final fcmToken = await FirebaseMessaging.instance.getToken();
-  /// if (fcmToken != null) {
-  ///   await ZendeskMessaging.updatePushNotificationToken(fcmToken);
-  /// }
+  /// // Android (FCM)
+  /// final token = await FirebaseMessaging.instance.getToken();
+  /// await ZendeskMessaging.updatePushNotificationToken(token!);
   ///
-  /// // Listen for token refresh
-  /// FirebaseMessaging.instance.onTokenRefresh.listen((token) {
-  ///   ZendeskMessaging.updatePushNotificationToken(token);
-  /// });
+  /// // Refresh
+  /// FirebaseMessaging.instance.onTokenRefresh.listen(
+  ///   ZendeskMessaging.updatePushNotificationToken,
+  /// );
   /// ```
+  ///
+  /// Throws [ArgumentError] if [token] is empty.
   static Future<void> updatePushNotificationToken(String token) async {
-    if (token.isEmpty) {
-      throw ArgumentError('token cannot be empty');
-    }
+    if (token.isEmpty) throw ArgumentError('token cannot be empty');
 
     try {
-      await _channel.invokeMethod('updatePushNotificationToken', {
-        'token': token,
-      });
+      await _channel.invokeMethod<void>('updatePushNotificationToken', {'token': token});
       ZendeskMessagingConfig.log('Push notification token updated');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'updatePushNotificationToken failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('updatePushNotificationToken failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Check if a push notification payload is from Zendesk.
-  ///
-  /// Use this method to determine whether an incoming push notification
-  /// should be handled by the Zendesk SDK.
+  /// Check whether a push notification payload belongs to Zendesk Messaging
+  /// and whether the SDK should display it.
   ///
   /// [messageData] The notification data payload.
   ///
@@ -644,88 +585,54 @@ class ZendeskMessaging {
     Map<String, dynamic> messageData,
   ) async {
     try {
-      final result = await _channel.invokeMethod<String>('shouldBeDisplayed', {
-        'messageData': messageData,
-      });
+      final result = await _channel.invokeMethod<String>('shouldBeDisplayed', {'messageData': messageData});
       return ZendeskPushResponsibility.fromString(result);
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'shouldBeDisplayed failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('shouldBeDisplayed failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Handle and display an incoming push notification.
+  /// Hand a Zendesk push notification payload to the SDK for display.
   ///
-  /// Call this method when you receive a push notification that should be
-  /// handled by Zendesk. The SDK will display the notification appropriately
-  /// based on the app state.
+  /// Returns `true` if the SDK handled the notification.
   ///
-  /// [messageData] The notification data payload.
-  ///
-  /// Returns `true` if the notification was handled by Zendesk, `false` otherwise.
-  ///
-  /// Example:
-  /// ```dart
-  /// FirebaseMessaging.onMessage.listen((message) async {
-  ///   final handled = await ZendeskMessaging.handleNotification(message.data);
-  ///   if (!handled) {
-  ///     // Not a Zendesk notification, handle it yourself
-  ///   }
-  /// });
-  /// ```
+  /// Only call after [shouldBeDisplayed] returns
+  /// [ZendeskPushResponsibility.messagingShouldDisplay].
   static Future<bool> handleNotification(
     Map<String, dynamic> messageData,
   ) async {
     try {
-      final result = await _channel.invokeMethod<bool>('handleNotification', {
-        'messageData': messageData,
-      });
+      final result = await _channel.invokeMethod<bool>('handleNotification', {'messageData': messageData});
       ZendeskMessagingConfig.log('Notification handled: $result');
       return result ?? false;
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'handleNotification failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('handleNotification failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
 
-  /// Handle a notification tap event.
+  /// Handle a user tap on a Zendesk push notification.
   ///
-  /// Call this method when the user taps on a Zendesk push notification
-  /// to navigate to the appropriate conversation.
-  ///
-  /// [messageData] The notification data payload.
+  /// Opens the relevant conversation screen.
   ///
   /// **Note**: On iOS, when the app is in a killed state, this may not
   /// navigate to the conversation as the SDK is not initialized.
   ///
   /// Example:
   /// ```dart
-  /// FirebaseMessaging.onMessageOpenedApp.listen((message) async {
-  ///   await ZendeskMessaging.handleNotificationTap(message.data);
+  /// FirebaseMessaging.onMessageOpenedApp.listen((message) {
+  ///   ZendeskMessaging.handleNotificationTap(message.data);
   /// });
   /// ```
   static Future<void> handleNotificationTap(
     Map<String, dynamic> messageData,
   ) async {
     try {
-      await _channel.invokeMethod('handleNotificationTap', {
-        'messageData': messageData,
-      });
+      await _channel.invokeMethod<void>('handleNotificationTap', {'messageData': messageData});
       ZendeskMessagingConfig.log('Notification tap handled');
     } catch (e, stackTrace) {
-      ZendeskMessagingConfig.logError(
-        'handleNotificationTap failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      ZendeskMessagingConfig.logError('handleNotificationTap failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -735,28 +642,45 @@ class ZendeskMessaging {
   // ============================================================================
 
   static Future<dynamic> _onMethodCall(MethodCall call) async {
-    final method = call.method;
-    final arguments = call.arguments != null
-        ? Map<String, dynamic>.from(call.arguments)
-        : <String, dynamic>{};
+    final arguments = call.arguments != null ? Map<String, dynamic>.from(call.arguments as Map) : <String, dynamic>{};
 
-    switch (method) {
-      case 'unread_messages':
-        // Legacy callback for backwards compatibility
-        final count = arguments['messages_count'] as int?;
-        _unreadMessagesCountController.add(count ?? 0);
-
-      case 'zendesk_event':
-        // New event system
+    switch (call.method) {
+      // ── Primary event channel (matches native ON_EVENT = "onEvent") ─────────
+      case 'onEvent':
         final event = ZendeskEventParser.parse(arguments);
         if (event != null) {
-          _eventController.add(event);
-
-          // Also emit to legacy stream for backwards compatibility
-          if (event is UnreadMessageCountChanged) {
+          if (!_eventController.isClosed) {
+            _eventController.add(event);
+          }
+          // Forward unread count to legacy stream for backwards compatibility
+          if (event is UnreadMessageCountChanged && !_unreadMessagesCountController.isClosed) {
             _unreadMessagesCountController.add(event.totalUnreadCount);
           }
+        } else {
+          ZendeskMessagingConfig.log('Could not parse onEvent payload: $arguments');
         }
+
+      // ── Legacy Android unread callback (kept for safety) ───────────────────
+      case 'unread_messages':
+        final count = arguments['messages_count'] as int?;
+        if (!_unreadMessagesCountController.isClosed) {
+          _unreadMessagesCountController.add(count ?? 0);
+        }
+
+      default:
+        ZendeskMessagingConfig.log('Unhandled method call: ${call.method}');
     }
+  }
+
+  /// Dispose all stream controllers.
+  ///
+  /// Call during app shutdown. After calling this, [eventStream] and
+  /// [unreadMessagesCountStream] will no longer emit events.
+  static void dispose() {
+    if (!_eventController.isClosed) _eventController.close();
+    if (!_unreadMessagesCountController.isClosed) {
+      _unreadMessagesCountController.close();
+    }
+    ZendeskMessagingConfig.log('Streams disposed');
   }
 }

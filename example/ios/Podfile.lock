@@ -3,7 +3,7 @@ PODS:
   - Zendesk (3.14.0):
     - ZendeskSDKConversationKit (~> 13.1.0)
     - ZendeskSDKCoreUtilities (~> 7.2.0)
-  - zendesk_messaging (3.0.0):
+  - zendesk_messaging (3.1.0):
     - Flutter
     - ZendeskSDKMessaging (= 2.36.0)
   - ZendeskSDKAnalyticsKit (0.1.0):
@@ -70,7 +70,7 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   Zendesk: 63b7c55c44eb5637b301528e9d0b655a4f07f07b
-  zendesk_messaging: 4a71dae86b6e2134d282edc785a688e641c22e70
+  zendesk_messaging: dcbc256ea757286bccb482144047b1a6bf5383b2
   ZendeskSDKAnalyticsKit: a52a557156323b48930b27f16ced1ee1c8ba30a0
   ZendeskSDKConversationKit: 28e30c9e1e0210a2d77d0d98deb6dee750260a0e
   ZendeskSDKCoreUtilities: be8ad25c945ae13ee8df4a34b361021d30f8589b

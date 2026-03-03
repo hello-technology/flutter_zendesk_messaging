@@ -15,7 +15,7 @@ Flutter plugin for Zendesk Messaging SDK. Enables in-app customer support messag
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.dependency 'ZendeskSDKMessaging', '2.36.0'
+  s.dependency 'ZendeskSDKMessaging', '2.37.0'
   s.platform = :ios, '14.0'
 
   # Flutter.framework does not contain a i386 slice.

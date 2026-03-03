@@ -1,9 +1,17 @@
 package com.chyiiiiiiiiiiiiii.zendesk_messaging
 
+import android.app.Activity
+import android.app.Application
 import android.content.Context
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
 import io.flutter.plugin.common.MethodChannel
 import zendesk.android.Zendesk
-import zendesk.android.ZendeskUser
 import zendesk.android.events.ZendeskEvent
 import zendesk.android.events.ZendeskEventListener
 import zendesk.android.messaging.MessagingScreen
@@ -13,562 +21,573 @@ import zendesk.messaging.android.push.PushResponsibility
 
 class ZendeskMessaging(
     private val plugin: ZendeskMessagingPlugin,
-    private val channel: MethodChannel
+    private val channel: MethodChannel,
 ) {
     companion object {
         const val TAG = "[ZendeskMessaging]"
+        const val ON_EVENT = "onEvent"
 
-        // Method channel event keys
-        const val EVENT_UNREAD_MESSAGES = "unread_messages"
-        const val EVENT_ZENDESK_EVENT = "zendesk_event"
+        // How many times to retry hiding the composer, and the interval between retries.
+        private const val COMPOSER_HIDE_MAX_RETRIES = 20
+        private const val COMPOSER_HIDE_RETRY_DELAY_MS = 150L
     }
 
-    // Event listener for all Zendesk events
-    private val zendeskEventListener = ZendeskEventListener { zendeskEvent ->
-        handleZendeskEvent(zendeskEvent)
-    }
+    // Guard against duplicate event listener registration
+    private var eventListenerRegistered = false
 
-    private fun handleZendeskEvent(zendeskEvent: ZendeskEvent) {
-        when (zendeskEvent) {
-            is ZendeskEvent.UnreadMessageCountChanged -> {
-                // Legacy callback for backwards compatibility
-                channel.invokeMethod(
-                    EVENT_UNREAD_MESSAGES,
-                    mapOf("messages_count" to zendeskEvent.currentUnreadCount)
-                )
-                // New event system
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "unreadMessageCountChanged",
-                        "timestamp" to System.currentTimeMillis(),
-                        "totalUnreadCount" to zendeskEvent.currentUnreadCount
-                    )
-                )
-            }
+    // Cached user after loginUser success
+    private var cachedUser: Map<String, Any?>? = null
 
-            is ZendeskEvent.AuthenticationFailed -> {
-                val isJwtExpired = zendeskEvent.error.message?.contains("expired", ignoreCase = true) == true
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "authenticationFailed",
-                        "timestamp" to System.currentTimeMillis(),
-                        "errorCode" to "authentication_failed",
-                        "errorMessage" to (zendeskEvent.error.message ?: "Unknown error"),
-                        "isJwtExpired" to isJwtExpired
-                    )
-                )
-            }
+    // Last known connection status
+    private var lastConnectionStatus = "unknown"
 
-            is ZendeskEvent.FieldValidationFailed -> {
-                val errorMessages = zendeskEvent.errors.map { it.toString() }
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "fieldValidationFailed",
-                        "timestamp" to System.currentTimeMillis(),
-                        "errors" to errorMessages
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConnectionStatusChanged -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "connectionStatusChanged",
-                        "timestamp" to System.currentTimeMillis(),
-                        "status" to zendeskEvent.connectionStatus.name.lowercase()
-                    )
-                )
-            }
-
-            is ZendeskEvent.SendMessageFailed -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "sendMessageFailed",
-                        "timestamp" to System.currentTimeMillis(),
-                        "errorMessage" to (zendeskEvent.cause.message ?: "Unknown error")
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationAdded -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationAdded",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to zendeskEvent.conversationId
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationStarted -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationStarted",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to zendeskEvent.conversationId
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationOpened -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationOpened",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to zendeskEvent.conversationId
-                    )
-                )
-            }
-
-            is ZendeskEvent.MessagesShown -> {
-                val messagesData = zendeskEvent.messages.map { message ->
-                    mapOf(
-                        "id" to message.id,
-                        "conversationId" to zendeskEvent.conversationId
-                    )
-                }
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "messagesShown",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to zendeskEvent.conversationId,
-                        "messages" to messagesData
-                    )
-                )
-            }
-
-            is ZendeskEvent.ProactiveMessageDisplayed -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "proactiveMessageDisplayed",
-                        "timestamp" to System.currentTimeMillis(),
-                        "proactiveMessageId" to "",
-                        "campaignId" to null
-                    )
-                )
-            }
-
-            is ZendeskEvent.ProactiveMessageClicked -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "proactiveMessageClicked",
-                        "timestamp" to System.currentTimeMillis(),
-                        "proactiveMessageId" to "",
-                        "campaignId" to null
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationWithAgentRequested -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationWithAgentRequested",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationServedByAgent -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationServedByAgent",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.MessagingOpened -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "messagingOpened",
-                        "timestamp" to System.currentTimeMillis()
-                    )
-                )
-            }
-
-            is ZendeskEvent.MessagingClosed -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "messagingClosed",
-                        "timestamp" to System.currentTimeMillis()
-                    )
-                )
-            }
-
-            is ZendeskEvent.NewConversationButtonClicked -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "newConversationButtonClicked",
-                        "timestamp" to System.currentTimeMillis()
-                    )
-                )
-            }
-
-            is ZendeskEvent.PostbackButtonClicked -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "postbackButtonClicked",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to "",
-                        "actionName" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationExtensionOpened -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationExtensionOpened",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to "",
-                        "extensionUrl" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.ConversationExtensionDisplayed -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "conversationExtensionDisplayed",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to "",
-                        "extensionUrl" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.ArticleBrowserClicked -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "articleBrowserClicked",
-                        "timestamp" to System.currentTimeMillis(),
-                        "articleUrl" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.ArticleClicked -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "articleClicked",
-                        "timestamp" to System.currentTimeMillis(),
-                        "articleUrl" to "",
-                        "conversationId" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.NotificationDisplayed -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "notificationDisplayed",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to ""
-                    )
-                )
-            }
-
-            is ZendeskEvent.NotificationOpened -> {
-                channel.invokeMethod(
-                    EVENT_ZENDESK_EVENT,
-                    mapOf(
-                        "type" to "notificationOpened",
-                        "timestamp" to System.currentTimeMillis(),
-                        "conversationId" to ""
-                    )
-                )
-            }
-
-            else -> {
-                // Default branch for forward compatibility with Zendesk SDK and its `ZendeskEvent` expansion
-                println("$TAG - Unknown event type: $zendeskEvent")
-            }
+    private val zendeskEventListener = ZendeskEventListener { event ->
+        try {
+            handleZendeskEvent(event)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling ZendeskEvent: ${e.message}")
         }
     }
 
+
+    // Initialization
+
+
     fun initialize(channelKey: String, result: MethodChannel.Result) {
-        println("$TAG - Channel Key - $channelKey")
-        Zendesk.initialize(
-            plugin.activity!!,
-            channelKey,
-            successCallback = { value ->
-                plugin.isInitialized = true
-                println("$TAG - initialize success - $value")
-                result.success(null)
-            },
-            failureCallback = { error ->
-                plugin.isInitialized = false
-                println("$TAG - initialize failure - $error")
-                result.error("initialize_error", error.message, null)
-            },
-            messagingFactory = DefaultMessagingFactory()
-        )
+        val activity = plugin.activity ?: run {
+            result.error("no_activity", "Activity is null", null)
+            return
+        }
+        try {
+            Zendesk.initialize(
+                activity,
+                channelKey,
+                successCallback = {
+                    plugin.isInitialized = true
+                    listenMessageCountChanged()
+                    Log.d(TAG, "Initialized successfully")
+                    result.success(null)
+                },
+                failureCallback = { error ->
+                    plugin.isInitialized = false
+                    Log.e(TAG, "Initialization failed: ${error.message}")
+                    result.error("initialize_error", error.message, null)
+                },
+                messagingFactory = DefaultMessagingFactory()
+            )
+        } catch (e: Exception) {
+            result.error("initialize_exception", e.message, null)
+        }
     }
 
     fun invalidate() {
-        Zendesk.instance.removeEventListener(zendeskEventListener)
-        Zendesk.invalidate()
+        try {
+            if (eventListenerRegistered) {
+                Zendesk.instance.removeEventListener(zendeskEventListener)
+                eventListenerRegistered = false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error removing event listener: ${e.message}")
+        }
+        try {
+            Zendesk.invalidate()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error invalidating Zendesk: ${e.message}")
+        }
         plugin.isInitialized = false
         plugin.isLoggedIn = false
-        println("$TAG - invalidated")
+        cachedUser = null
+        lastConnectionStatus = "unknown"
+        Log.d(TAG, "SDK invalidated")
     }
 
-    fun show() {
+
+    // Exit Action Helper
+
+
+    private fun resolveExitAction(exitAction: String?): MessagingScreen.ExitAction {
+        return if (exitAction == "return_to_conversation_list") {
+            MessagingScreen.ExitAction.ReturnToConversationList
+        } else {
+            MessagingScreen.ExitAction.Close
+        }
+    }
+
+
+    // Messaging UI
+
+
+    fun show(exitAction: String?) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
-            MessagingScreen.MostRecentActiveConversation()
+            activity,
+            MessagingScreen.MostRecentActiveConversation(
+                onExit = resolveExitAction(exitAction)
+            )
         )
-        println("$TAG - show")
+        Log.d(TAG, "show() — exitAction=$exitAction")
     }
 
-    fun showConversation(conversationId: String) {
+    fun showConversation(conversationId: String, exitAction: String?, isClosed: Boolean = false) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
-            MessagingScreen.Conversation(id = conversationId)
+            activity,
+            MessagingScreen.Conversation(
+                id = conversationId,
+                onExit = resolveExitAction(exitAction)
+            )
         )
-        println("$TAG - showConversation: $conversationId")
+        // showMessaging() launches a new Activity. We register a one-shot
+        // ActivityLifecycleCallbacks so we are notified the moment that new
+        // Activity is resumed and its views are ready, then retry hiding the
+        // composer until we find it (or exhaust our attempts).
+        if (isClosed) {
+            scheduleComposerHide(activity.application)
+        }
+        Log.d(
+            TAG,
+            "showConversation() — id=$conversationId exitAction=$exitAction isClosed=$isClosed"
+        )
     }
 
-    fun showConversationList() {
+    fun showConversationList(exitAction: String?) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
+            activity,
             MessagingScreen.ConversationsList
         )
-        println("$TAG - showConversationList")
+        Log.d(TAG, "showConversationList() — exitAction=$exitAction")
     }
 
-    fun startNewConversation() {
+    fun startNewConversation(exitAction: String?) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
-            MessagingScreen.NewConversation()
+            activity,
+            MessagingScreen.NewConversation(
+                onExit = resolveExitAction(exitAction)
+            )
         )
-        println("$TAG - startNewConversation")
+        Log.d(TAG, "startNewConversation() — exitAction=$exitAction")
     }
 
-    fun getUnreadMessageCount(): Int =
-        try {
-            Zendesk.instance.messaging.getUnreadMessageCount()
-        } catch (error: Throwable) {
-            println("$TAG - getUnreadMessageCount error: ${error.message}")
-            0
-        }
 
-    fun getUnreadMessageCountForConversation(conversationId: String): Int =
-        try {
-            Zendesk.instance.messaging.getUnreadMessageCount(conversationId)
-        } catch (error: Throwable) {
-            println("$TAG - getUnreadMessageCountForConversation error: ${error.message}")
-            0
-        }
+    // Composer Hiding
 
-    fun setConversationTags(tags: List<String>) {
-        Zendesk.instance.messaging.setConversationTags(tags)
-        println("$TAG - setConversationTags: $tags")
-    }
-
-    fun clearConversationTags() {
-        Zendesk.instance.messaging.clearConversationTags()
-        println("$TAG - clearConversationTags")
-    }
-
-    fun loginUser(jwt: String, result: MethodChannel.Result) {
-        Zendesk.instance.loginUser(
-            jwt,
-            { user ->
-                plugin.isLoggedIn = true
-                result.success(
-                    mapOf(
-                        "id" to user.id,
-                        "externalId" to user.externalId,
-                        "authenticationType" to getAuthenticationType(user)
-                    )
-                )
-                println("$TAG - loginUser success")
-            },
-            { error ->
-                println("$TAG - Login failure : ${error.message}")
-                result.error("login_error", error.message, null)
-            }
-        )
-    }
-
-    fun logoutUser(result: MethodChannel.Result) {
-        Zendesk.instance.logoutUser(
-            successCallback = {
-                plugin.isLoggedIn = false
-                result.success(null)
-                println("$TAG - logoutUser success")
-            },
-            failureCallback = { error ->
-                println("$TAG - Logout failure : ${error.message}")
-                result.error("logout_error", error.message, null)
-            }
-        )
-        Zendesk.instance.removeEventListener(zendeskEventListener)
-    }
-
-    fun getCurrentUser(result: MethodChannel.Result) {
-        try {
-            Zendesk.instance.getCurrentUser { user ->
-                if (user != null) {
-                    result.success(
-                        mapOf(
-                            "id" to user.id,
-                            "externalId" to user.externalId,
-                            "authenticationType" to getAuthenticationType(user)
-                        )
-                    )
-                } else {
-                    result.success(null)
-                }
-            }
-        } catch (error: Throwable) {
-            println("$TAG - getCurrentUser error: ${error.message}")
-            result.success(null)
-        }
-    }
-
-    private fun getAuthenticationType(user: ZendeskUser): String {
-        return try {
-            when (user.authenticationType) {
-                zendesk.android.ZendeskAuthenticationType.Jwt -> "jwt"
-                else -> "anonymous"
-            }
-        } catch (e: Throwable) {
-            "anonymous"
-        }
-    }
-
-    fun getConnectionStatus(): String {
-        return try {
-            // Connection status is obtained from events, return current known state
-            "unknown"
-        } catch (error: Throwable) {
-            println("$TAG - getConnectionStatus error: ${error.message}")
-            "unknown"
-        }
-    }
-
-    fun listenMessageCountChanged() {
-        // To add the event listener to your Zendesk instance:
-        Zendesk.instance.addEventListener(zendeskEventListener)
-        println("$TAG - listenMessageCountChanged - Event listener added")
-    }
-
-    fun setConversationFields(fields: Map<String, String>) {
-        Zendesk.instance.messaging.setConversationFields(fields)
-        println("$TAG - setConversationFields: $fields")
-    }
-
-    fun clearConversationFields() {
-        Zendesk.instance.messaging.clearConversationFields()
-        println("$TAG - clearConversationFields")
-    }
-
-    // ============================================================================
-    // Push Notifications
-    // ============================================================================
 
     /**
-     * Update the push notification token with Zendesk.
-     * Call this when receiving a new FCM token.
+     * Registers a one-shot [Application.ActivityLifecycleCallbacks] that fires
+     * when the next Zendesk Activity is resumed.  At that point the window is
+     * guaranteed to exist, so we start a retry loop that keeps trying to find
+     * and hide the composer until it succeeds or retries are exhausted.
      */
-    fun updatePushNotificationToken(token: String) {
-        try {
-            PushNotifications.updatePushNotificationToken(token)
-            println("$TAG - updatePushNotificationToken: token updated")
-        } catch (error: Throwable) {
-            println("$TAG - updatePushNotificationToken error: ${error.message}")
-            throw error
+    private fun scheduleComposerHide(app: Application) {
+        app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityResumed(a: Activity) {
+                // Unregister immediately — one-shot only.
+                app.unregisterActivityLifecycleCallbacks(this)
+                retryHideComposer(a, COMPOSER_HIDE_MAX_RETRIES)
+            }
+
+            override fun onActivityCreated(a: Activity, b: Bundle?) {}
+            override fun onActivityStarted(a: Activity) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivityStopped(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
+            override fun onActivityDestroyed(a: Activity) {}
+        })
+    }
+
+    /**
+     * Tries to hide the composer in [activity].  If the view tree is not yet
+     * ready (EditText not found), schedules another attempt after
+     * [COMPOSER_HIDE_RETRY_DELAY_MS] ms, up to [attemptsLeft] more times.
+     */
+    private fun retryHideComposer(activity: Activity, attemptsLeft: Int) {
+        if (attemptsLeft <= 0) {
+            Log.w(TAG, "retryHideComposer — gave up after all attempts")
+            return
+        }
+        val decorView = activity.window?.decorView ?: return
+        decorView.post {
+            val hidden = tryHideComposer(activity)
+            if (!hidden) {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    retryHideComposer(activity, attemptsLeft - 1)
+                }, COMPOSER_HIDE_RETRY_DELAY_MS)
+            }
         }
     }
 
     /**
-     * Check if a push notification should be displayed by Zendesk.
-     * Returns the responsibility indicating how to handle the notification.
+     * Attempts a single hide pass.  Returns `true` if the composer was found
+     * and hidden, `false` if not found yet.
      */
-    fun shouldBeDisplayed(messageData: Map<String, String>): String {
+    private fun tryHideComposer(activity: Activity): Boolean {
         return try {
-            val responsibility = PushNotifications.shouldBeDisplayed(messageData)
-            val result = when (responsibility) {
-                PushResponsibility.MESSAGING_SHOULD_DISPLAY -> "messaging_should_display"
-                PushResponsibility.MESSAGING_SHOULD_NOT_DISPLAY -> "messaging_should_not_display"
-                PushResponsibility.NOT_FROM_MESSAGING -> "not_from_messaging"
-                else -> "unknown"
-            }
-            println("$TAG - shouldBeDisplayed: $result")
-            result
-        } catch (error: Throwable) {
-            println("$TAG - shouldBeDisplayed error: ${error.message}")
-            "unknown"
-        }
-    }
+            val contentRoot = activity.window?.decorView
+                ?.findViewById<ViewGroup>(android.R.id.content) ?: return false
 
-    /**
-     * Handle and display a push notification.
-     * Returns true if the notification was handled by Zendesk.
-     */
-    fun handleNotification(context: Context, messageData: Map<String, String>): Boolean {
-        return try {
-            val responsibility = PushNotifications.shouldBeDisplayed(messageData)
-            if (responsibility == PushResponsibility.MESSAGING_SHOULD_DISPLAY) {
-                PushNotifications.displayNotification(context, messageData)
-                println("$TAG - handleNotification: notification displayed")
-                true
+            val editText = findFirstEditText(contentRoot) ?: return false
+
+            // Walk up to a direct child of contentRoot so we hide the full
+            // composer bar, not just the EditText itself.
+            var candidate: View = editText
+            while (candidate.parent != null && candidate.parent !== contentRoot) {
+                candidate = candidate.parent as? View ?: break
+            }
+
+            // Only hide if the candidate sits in the bottom half of the screen
+            // (guards against accidentally hiding a message input in the middle).
+            val location = IntArray(2)
+            candidate.getLocationInWindow(location)
+            val screenMidY = contentRoot.height / 2
+
+            if (screenMidY > 0 && location[1] > screenMidY) {
+                candidate.visibility = View.GONE
             } else {
-                println("$TAG - handleNotification: not a Zendesk notification")
-                false
+                // Fallback: hide the EditText's immediate parent container.
+                (editText.parent as? View)?.visibility = View.GONE
             }
-        } catch (error: Throwable) {
-            println("$TAG - handleNotification error: ${error.message}")
+
+            Log.d(TAG, "tryHideComposer — composer hidden successfully")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "tryHideComposer — error: ${e.message}")
             false
         }
     }
 
-    /**
-     * Handle a notification tap event.
-     * Opens the messaging UI to the relevant conversation.
-     */
-    fun handleNotificationTap(context: Context, messageData: Map<String, String>) {
-        try {
-            val responsibility = PushNotifications.shouldBeDisplayed(messageData)
-            if (responsibility == PushResponsibility.MESSAGING_SHOULD_DISPLAY) {
-                // Show messaging UI - the SDK will navigate to the correct conversation
-                Zendesk.instance.messaging.showMessaging(
-                    plugin.activity!!,
-                    MessagingScreen.MostRecentActiveConversation()
-                )
-                println("$TAG - handleNotificationTap: opened messaging")
-            } else {
-                println("$TAG - handleNotificationTap: not a Zendesk notification")
+    private fun findFirstEditText(view: View): EditText? {
+        if (view is EditText) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findFirstEditText(view.getChildAt(i))?.let { return it }
             }
-        } catch (error: Throwable) {
-            println("$TAG - handleNotificationTap error: ${error.message}")
-            throw error
+        }
+        return null
+    }
+
+
+    // Authentication
+
+
+    fun loginUser(jwt: String, result: MethodChannel.Result) {
+        try {
+            Zendesk.instance.loginUser(
+                jwt,
+                { user ->
+                    plugin.isLoggedIn = true
+                    cachedUser = mapOf(
+                        "id" to user.id,
+                        "externalId" to user.externalId,
+                        "authenticationType" to "jwt",
+                    )
+                    Log.d(TAG, "User logged in: ${user.id}")
+                    result.success(mapOf("id" to user.id, "externalId" to user.externalId))
+                },
+                { error ->
+                    Log.e(TAG, "Login failure: ${error.message}")
+                    result.error("login_error", error.message, null)
+                }
+            )
+        } catch (e: Exception) {
+            result.error("login_exception", e.message, null)
+        }
+    }
+
+    fun logoutUser(result: MethodChannel.Result) {
+        try {
+            Zendesk.instance.logoutUser(
+                {
+                    plugin.isLoggedIn = false
+                    cachedUser = null
+                    removeEventListener()
+                    Log.d(TAG, "User logged out")
+                    result.success(null)
+                },
+                { error ->
+                    Log.e(TAG, "Logout failure: ${error.message}")
+                    result.error("logout_error", error.message, null)
+                }
+            )
+        } catch (e: Exception) {
+            result.error("logout_exception", e.message, null)
+        }
+    }
+
+    fun getCurrentUser(result: MethodChannel.Result) {
+        result.success(cachedUser)
+    }
+
+
+    // Unread Messages
+
+
+    fun getUnreadMessageCount(): Int {
+        return try {
+            Zendesk.instance.messaging.getUnreadMessageCount()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting unread count: ${e.message}")
+            0
+        }
+    }
+
+    fun getUnreadMessageCountForConversation(conversationId: String): Int {
+        // The Zendesk Android SDK does not expose a per-conversation count API;
+        // return the total count as the nearest available value.
+        return getUnreadMessageCount()
+    }
+
+    fun listenMessageCountChanged() {
+        if (eventListenerRegistered) {
+            Log.d(TAG, "Event listener already registered — skipping duplicate registration")
+            return
+        }
+        try {
+            Zendesk.instance.addEventListener(zendeskEventListener)
+            eventListenerRegistered = true
+            Log.d(TAG, "Event listener registered")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering event listener: ${e.message}")
+        }
+    }
+
+    private fun removeEventListener() {
+        if (!eventListenerRegistered) return
+        try {
+            Zendesk.instance.removeEventListener(zendeskEventListener)
+            eventListenerRegistered = false
+            Log.d(TAG, "Event listener removed")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error removing event listener: ${e.message}")
+        }
+    }
+
+
+    // Connection Status
+
+
+    fun getConnectionStatus(): String = lastConnectionStatus
+
+
+    // Conversation Metadata
+
+
+    fun setConversationTags(tags: List<String>) {
+        try {
+            Zendesk.instance.messaging.setConversationTags(tags)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting tags: ${e.message}")
+        }
+    }
+
+    fun clearConversationTags() {
+        try {
+            Zendesk.instance.messaging.clearConversationTags()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error clearing tags: ${e.message}")
+        }
+    }
+
+    fun setConversationFields(fields: Map<String, String>) {
+        try {
+            Zendesk.instance.messaging.setConversationFields(fields)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting fields: ${e.message}")
+        }
+    }
+
+    fun clearConversationFields() {
+        try {
+            Zendesk.instance.messaging.clearConversationFields()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error clearing fields: ${e.message}")
+        }
+    }
+
+
+    // Push Notifications
+
+
+    fun updatePushNotificationToken(token: String) {
+        try {
+            PushNotifications.updatePushNotificationToken(token)
+            Log.d(TAG, "Push notification token updated")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating push token: ${e.message}")
+        }
+    }
+
+    fun shouldBeDisplayed(data: Map<String, String>): String {
+        return try {
+            when (PushNotifications.shouldBeDisplayed(data)) {
+                PushResponsibility.MESSAGING_SHOULD_DISPLAY ->
+                    "messagingShouldDisplay"
+
+                PushResponsibility.MESSAGING_SHOULD_NOT_DISPLAY ->
+                    "messagingShouldNotDisplay"
+
+                else -> "notFromMessaging"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in shouldBeDisplayed: ${e.message}")
+            "notFromMessaging"
+        }
+    }
+
+    fun handleNotification(context: Context, data: Map<String, String>): Boolean {
+        return try {
+            when (PushNotifications.shouldBeDisplayed(data)) {
+                PushResponsibility.MESSAGING_SHOULD_DISPLAY -> {
+                    PushNotifications.displayNotification(context, data)
+                    true
+                }
+
+                else -> false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling notification: ${e.message}")
+            false
+        }
+    }
+
+    fun handleNotificationTap(context: Context, data: Map<String, String>) {
+        // The Android SDK handles notification taps automatically via a PendingIntent
+        // set up by PushNotifications.displayNotification(). If called manually
+        // (e.g. from a background message), open the most recent conversation.
+        try {
+            val activity = plugin.activity
+            if (activity != null) {
+                Zendesk.instance.messaging.showMessaging(
+                    activity,
+                    MessagingScreen.MostRecentActiveConversation(
+                        onExit = MessagingScreen.ExitAction.Close
+                    )
+                )
+            }
+            Log.d(TAG, "handleNotificationTap — opened most recent conversation")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling notification tap: ${e.message}")
+        }
+    }
+
+
+    // Zendesk Event Handling
+
+
+    private fun handleZendeskEvent(event: ZendeskEvent) {
+        val now = System.currentTimeMillis()
+
+        try {
+            when (event) {
+
+                is ZendeskEvent.UnreadMessageCountChanged -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "unreadMessageCountChanged",
+                            "timestamp" to now,
+                            "totalUnreadCount" to event.currentUnreadCount,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.AuthenticationFailed -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "authenticationFailed",
+                            "timestamp" to now,
+                            "errorCode" to "auth_error",
+                            "errorMessage" to (event.error.message ?: "Unknown error"),
+                            "isJwtExpired" to false,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.FieldValidationFailed -> {
+                    val errors = event.errors.mapNotNull { it.message }
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "fieldValidationFailed",
+                            "timestamp" to now,
+                            "errors" to errors,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.ConnectionStatusChanged -> {
+                    val status = event.connectionStatus.toString().lowercase()
+                    lastConnectionStatus = status
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "connectionStatusChanged",
+                            "timestamp" to now,
+                            "status" to status,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.SendMessageFailed -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "sendMessageFailed",
+                            "timestamp" to now,
+                            "errorMessage" to (event.cause.message ?: "Unknown error"),
+                        )
+                    )
+                }
+
+                is ZendeskEvent.ConversationAdded -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "conversationAdded",
+                            "timestamp" to now,
+                            "conversationId" to event.conversationId,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.ConversationStarted -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "conversationStarted",
+                            "timestamp" to now,
+                            "conversationId" to event.conversationId,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.MessagingOpened -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "messagingOpened",
+                            "timestamp" to now,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.MessagingClosed -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "messagingClosed",
+                            "timestamp" to now,
+                        )
+                    )
+                }
+
+                is ZendeskEvent.NotificationOpened -> {
+                    channel.invokeMethod(
+                        ON_EVENT, mapOf(
+                            "type" to "notificationOpened",
+                            "timestamp" to now,
+                            "conversationId" to event.data.conversationId,
+                        )
+                    )
+                }
+
+                else -> Log.d(TAG, "Unhandled event: $event")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error emitting ZendeskEvent: ${e.message}")
         }
     }
 }

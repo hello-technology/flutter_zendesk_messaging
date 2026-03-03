@@ -13,16 +13,15 @@ void main() {
     // Disable logging during tests
     ZendeskMessagingConfig.enableLogging = false;
 
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+        (MethodCall methodCall) async {
       log.add(methodCall);
       return _handleMockMethodCall(methodCall);
     });
   });
 
   tearDown(() {
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
   });
 
   group('Initialization', () {
@@ -255,8 +254,7 @@ void main() {
       expect(log.first.arguments['token'], 'test_fcm_token_123');
     });
 
-    test('updatePushNotificationToken throws ArgumentError for empty token',
-        () async {
+    test('updatePushNotificationToken throws ArgumentError for empty token', () async {
       expect(
         () => ZendeskMessaging.updatePushNotificationToken(''),
         throwsArgumentError,
@@ -277,8 +275,8 @@ void main() {
 
     test('shouldBeDisplayed handles notFromMessaging', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'shouldBeDisplayed') {
           return 'notFromMessaging';
@@ -307,8 +305,8 @@ void main() {
 
     test('handleNotification returns false when not handled', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'handleNotification') {
           return false;
@@ -338,8 +336,8 @@ void main() {
   group('Authentication Edge Cases', () {
     test('getCurrentUser returns null when no user', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'getCurrentUser') {
           return null;
@@ -356,8 +354,8 @@ void main() {
 
     test('isInitialized returns false when not initialized', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'isInitialized') {
           return false;
@@ -372,8 +370,8 @@ void main() {
 
     test('isLoggedIn returns false when not logged in', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'isLoggedIn') {
           return false;
@@ -388,8 +386,8 @@ void main() {
 
     test('loginUser handles null response', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'loginUser') {
           return null;
@@ -408,8 +406,8 @@ void main() {
   group('Message Count Edge Cases', () {
     test('getUnreadMessageCount returns 0 when null', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'getUnreadMessageCount') {
           return null;
@@ -424,8 +422,8 @@ void main() {
 
     test('getUnreadMessageCountForConversation returns 0 when null', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'getUnreadMessageCountForConversation') {
           return null;
@@ -444,8 +442,8 @@ void main() {
   group('Connection Status Edge Cases', () {
     test('getConnectionStatus handles unknown status', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'getConnectionStatus') {
           return 'unknown_status';
@@ -460,8 +458,8 @@ void main() {
 
     test('getConnectionStatus handles null status', () async {
       // Override handler for this specific test
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (MethodCall methodCall) async {
         log.add(methodCall);
         if (methodCall.method == 'getConnectionStatus') {
           return null;

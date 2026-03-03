@@ -7,258 +7,279 @@ public class SwiftZendeskMessagingPlugin: NSObject, FlutterPlugin {
     private var zendeskMessaging: ZendeskMessaging?
     var isInitialized = false
     var isLoggedIn = false
-
+    
     init(channel: FlutterMethodChannel) {
         self.channel = channel
         super.init()
         self.zendeskMessaging = ZendeskMessaging(flutterPlugin: self, channel: channel)
     }
-
+    
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(name: "zendesk_messaging", binaryMessenger: registrar.messenger())
+        let channel = FlutterMethodChannel(name: "zendesk_messaging",
+                                           binaryMessenger: registrar.messenger())
         let instance = SwiftZendeskMessagingPlugin(channel: channel)
         registrar.addMethodCallDelegate(instance, channel: channel)
         registrar.addApplicationDelegate(instance)
     }
-
+    
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         DispatchQueue.main.async {
             self.processMethodCall(call, result: result)
         }
     }
-
+    
+    // MARK: - Root View Controller
+    
+    private var rootViewController: UIViewController? {
+        // iOS 15+-safe key window lookup via connectedScenes
+        if #available (iOS 13.0, *) {
+            return UIApplication.shared.connectedScenes.compactMap {
+                $0 as?UIWindowScene
+            }.flatMap {
+                $0.windows
+            }.first {
+                $0.isKeyWindow
+            }?.rootViewController
+        }
+        return UIApplication.shared.delegate?.window??.rootViewController
+    }
+    
+    // MARK: - Method Call Dispatch
+    
     private func processMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let method = call.method
-        let arguments = call.arguments as? Dictionary<String, Any>
-
+        let args = call.arguments as? [String: Any]
+        
+        // Shared presentation helpers
+        let viewMode = args?["viewMode"]  as?String
+        let exitAction = args?["exitAction"] as?String
+        
         switch method {
+            
+            // ── Initialization ────────────────────────────────────────────────
         case "initialize":
-            let channelKey: String = (arguments?["channelKey"] ?? "") as! String
+            guard let channelKey = args?["channelKey"] as?String, !channelKey.isEmpty else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "channelKey is required", details: nil))
+                return
+            }
             zendeskMessaging?.initialize(channelKey: channelKey, flutterResult: result)
-
+            
+            // ── Messaging UI ──────────────────────────────────────────────────
         case "show":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            zendeskMessaging?.show(rootViewController: UIApplication.shared.delegate?.window??.rootViewController, flutterResult: result)
-
+            zendeskMessaging?.show(
+                rootViewController: rootViewController,
+                viewMode: viewMode,
+                exitAction: exitAction,
+                flutterResult: result
+            )
+            
         case "showConversation":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
+            guard isInitialized else {
+                reportNotInitializedError(result); return
+            }
+            guard let conversationId = args?["conversationId"] as?String,
+                  !conversationId.isEmpty else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "conversationId is required", details: nil))
                 return
             }
-            guard let conversationId = arguments?["conversationId"] as? String, !conversationId.isEmpty else {
-                result(FlutterError(code: "invalid_argument", message: "conversationId is required", details: nil))
-                return
-            }
-            zendeskMessaging?.showConversation(conversationId: conversationId, rootViewController: UIApplication.shared.delegate?.window??.rootViewController, flutterResult: result)
-
+            let isClosed = args?["isClosed"] as?Bool ?? false
+            zendeskMessaging?.showConversation(
+                conversationId: conversationId,
+                rootViewController: rootViewController,
+                viewMode: viewMode,
+                exitAction: exitAction,
+                isClosed: isClosed,
+                flutterResult: result
+            )
+            
         case "showConversationList":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            zendeskMessaging?.showConversationList(rootViewController: UIApplication.shared.delegate?.window??.rootViewController, flutterResult: result)
-
+            zendeskMessaging?.showConversationList(
+                rootViewController: rootViewController,
+                viewMode: viewMode,
+                exitAction: exitAction,
+                flutterResult: result
+            )
+            
         case "startNewConversation":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            zendeskMessaging?.startNewConversation(rootViewController: UIApplication.shared.delegate?.window??.rootViewController, flutterResult: result)
-
+            zendeskMessaging?.startNewConversation(
+                rootViewController: rootViewController,
+                viewMode: viewMode,
+                exitAction: exitAction,
+                flutterResult: result
+            )
+            
+            // ── Authentication ────────────────────────────────────────────────
         case "loginUser":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
+            guard isInitialized else {
+                reportNotInitializedError(result); return
+            }
+            guard let jwt = args?["jwt"] as?String, !jwt.isEmpty else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "jwt is required", details: nil))
                 return
             }
-            let jwt: String = arguments?["jwt"] as? String ?? ""
             zendeskMessaging?.loginUser(jwt: jwt, flutterResult: result)
-
+            
         case "logoutUser":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             zendeskMessaging?.logoutUser(flutterResult: result)
-
+            
         case "getCurrentUser":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             zendeskMessaging?.getCurrentUser(flutterResult: result)
-
+            
+            // ── Unread Messages ───────────────────────────────────────────────
         case "getUnreadMessageCount":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            result(handleMessageCount())
-
+            result(zendeskMessaging?.getUnreadMessageCount() ?? 0)
+            
         case "getUnreadMessageCountForConversation":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
+            guard isInitialized else {
+                reportNotInitializedError(result); return
+            }
+            guard let conversationId = args?["conversationId"] as?String,
+                  !conversationId.isEmpty else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "conversationId is required", details: nil))
                 return
             }
-            guard let conversationId = arguments?["conversationId"] as? String, !conversationId.isEmpty else {
-                result(FlutterError(code: "invalid_argument", message: "conversationId is required", details: nil))
-                return
-            }
-            result(zendeskMessaging?.getUnreadMessageCountForConversation(conversationId: conversationId) ?? 0)
-
+            result(zendeskMessaging?.getUnreadMessageCountForConversation(conversationId) ?? 0)
+            
         case "listenUnreadMessages":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             zendeskMessaging?.listenMessageCountChanged()
             result(nil)
-
+            
+            // ── Connection ────────────────────────────────────────────────────
         case "getConnectionStatus":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             result(zendeskMessaging?.getConnectionStatus() ?? "unknown")
-
+            
+            // ── Status ────────────────────────────────────────────────────────
         case "isInitialized":
-            result(handleInitializedStatus())
-
+            result(isInitialized)
+            
         case "isLoggedIn":
-            result(handleLoggedInStatus())
-
+            result(isLoggedIn)
+            
+            // ── Conversation Metadata ─────────────────────────────────────────
         case "setConversationTags":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            let tags: [String] = arguments?["tags"] as? [String] ?? []
+            let tags = args?["tags"] as? [String] ?? []
             zendeskMessaging?.setConversationTags(tags: tags)
             result(nil)
-
+            
         case "clearConversationTags":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             zendeskMessaging?.clearConversationTags()
             result(nil)
-
+            
         case "setConversationFields":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            let fields: [String: String] = arguments?["fields"] as? [String: String] ?? [:]
+            let fields = args?["fields"] as? [String: String] ?? [:]
             zendeskMessaging?.setConversationFields(fields: fields)
             result(nil)
-
+            
         case "clearConversationFields":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             zendeskMessaging?.clearConversationFields()
             result(nil)
-
+            
+            // ── Lifecycle ─────────────────────────────────────────────────────
         case "invalidate":
-            if !isInitialized {
-                print("\(TAG) - Messaging is already on an invalid state\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
             zendeskMessaging?.invalidate()
             result(nil)
-
-        // ================================================================
-        // Push Notifications
-        // ================================================================
-
+            
+            // ── Push Notifications ────────────────────────────────────────────
         case "updatePushNotificationToken":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
-                return
+            guard isInitialized else {
+                reportNotInitializedError(result); return
             }
-            guard let token = arguments?["token"] as? String, !token.isEmpty else {
-                result(FlutterError(code: "invalid_argument", message: "token is required", details: nil))
+            guard let token = args?["token"] as?String, !token.isEmpty else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "token is required", details: nil))
                 return
             }
             zendeskMessaging?.updatePushNotificationTokenString(token)
             result(nil)
-
+            
         case "shouldBeDisplayed":
-            guard let messageData = arguments?["messageData"] as? [String: Any] else {
-                result(FlutterError(code: "invalid_argument", message: "messageData is required", details: nil))
+            guard let messageData = args?["messageData"] as? [String: Any] else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "messageData is required", details: nil))
                 return
             }
             let responsibility = zendeskMessaging?.shouldBeDisplayed(messageData) ?? "unknown"
             result(responsibility)
-
+            
         case "handleNotification":
-            guard let messageData = arguments?["messageData"] as? [String: Any] else {
-                result(FlutterError(code: "invalid_argument", message: "messageData is required", details: nil))
+            guard let messageData = args?["messageData"] as? [String: Any] else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "messageData is required", details: nil))
                 return
             }
             let handled = zendeskMessaging?.handleNotification(messageData) ?? false
             result(handled)
-
+            
         case "handleNotificationTap":
-            if !isInitialized {
-                print("\(TAG) - Messaging needs to be initialized first.\n")
-                reportNotInitializedFlutterError(result: result)
+            guard isInitialized else {
+                reportNotInitializedError(result); return
+            }
+            guard let messageData = args?["messageData"] as? [String: Any] else {
+                result(FlutterError(code: "invalid_args",
+                                    message: "messageData is required", details: nil))
                 return
             }
-            guard let messageData = arguments?["messageData"] as? [String: Any] else {
-                result(FlutterError(code: "invalid_argument", message: "messageData is required", details: nil))
-                return
-            }
-            zendeskMessaging?.handleNotificationTap(
-                messageData,
-                rootViewController: UIApplication.shared.delegate?.window??.rootViewController
-            ) { success in
+            zendeskMessaging?.handleNotificationTap(messageData,
+                                                    rootViewController: rootViewController) {
+                _ in
                 result(nil)
             }
-
+            
         default:
             result(FlutterMethodNotImplemented)
         }
     }
-
-    private func handleMessageCount() -> Int {
-        return zendeskMessaging?.getUnreadMessageCount() ?? 0
-    }
-
-    private func handleInitializedStatus() -> Bool {
-        return isInitialized
-    }
-
-    private func handleLoggedInStatus() -> Bool {
-        return isLoggedIn
-    }
-
-    private func reportNotInitializedFlutterError(result: FlutterResult) {
+    
+    // MARK: - Helpers
+    
+    private func reportNotInitializedError(_ result: FlutterResult) {
+        print("\(TAG) - Zendesk SDK needs to be initialized first")
         result(FlutterError(
             code: "not_initialized",
             message: "Zendesk SDK needs to be initialized first",
-            details: nil)
-        )
+            details: nil))
     }
 }
