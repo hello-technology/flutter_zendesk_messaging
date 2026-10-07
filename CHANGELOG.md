@@ -8,6 +8,7 @@ Upstream 3.6.0 plus:
 - `getConnectionStatus()` returns the last status reported by the SDK instead of `unknown`; Android realtime statuses now parse in Dart.
 - Android: the event listener is registered once, and the messaging screens no longer crash when no Activity is attached.
 - `ZendeskMessaging.dispose()` closes the event streams.
+- iOS: ZendeskSDKMessaging 2.41.0 and minimum iOS 16.0. 2.39.0's Swift package declares iOS 12 while its dependencies need iOS 16, which fails Xcode's target integrity check.
 
 ## 3.6.0
 
