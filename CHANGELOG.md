@@ -1,4 +1,4 @@
-## 3.6.0 (HelloApp fork)
+## 3.6.1 (HelloApp fork)
 
 Upstream 3.6.0 plus:
 
