@@ -13,10 +13,20 @@ public class ZendeskMessaging: NSObject {
     private weak var zendeskPlugin: ZendeskMessagingPlugin?
     private let channel: FlutterMethodChannel
     private var lastConnectionStatus: String = "unknown"
+    private weak var messagingNavController: UINavigationController?
+
+    private static let composerHideRetryInterval: TimeInterval = 0.15
 
     init(flutterPlugin: ZendeskMessagingPlugin, channel: FlutterMethodChannel) {
         self.zendeskPlugin = flutterPlugin
         self.channel = channel
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(dismissMessagingOnBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
     }
 
     func initialize(channelKey: String, flutterResult: @escaping FlutterResult) {
@@ -51,8 +61,55 @@ public class ZendeskMessaging: NSObject {
         print("\(self.TAG) - invalidate")
     }
 
-    func show(rootViewController: UIViewController?, flutterResult: @escaping FlutterResult) {
-        guard let viewController = Zendesk.instance?.messaging?.messagingViewController() else {
+    // ============================================================================
+    // Messaging UI
+    // ============================================================================
+
+    func show(rootViewController: UIViewController?, viewMode: String?, exitAction: String?, flutterResult: @escaping FlutterResult) {
+        let viewController = Zendesk.instance?.messaging?.messagingViewController(
+            .showMostRecentConversation(exitAction: resolveExitAction(exitAction))
+        )
+        present(viewController, on: rootViewController, viewMode: viewMode, flutterResult: flutterResult)
+        print("\(self.TAG) - show")
+    }
+
+    func showConversation(conversationId: String, rootViewController: UIViewController?, viewMode: String?, exitAction: String?, isClosed: Bool, flutterResult: @escaping FlutterResult) {
+        let viewController = Zendesk.instance?.messaging?.messagingViewController(
+            .showConversation(conversationId: conversationId, exitAction: resolveExitAction(exitAction))
+        )
+        present(viewController, on: rootViewController, viewMode: viewMode, readOnly: isClosed, flutterResult: flutterResult)
+        print("\(self.TAG) - showConversation: \(conversationId) (isClosed: \(isClosed))")
+    }
+
+    func showConversationList(rootViewController: UIViewController?, viewMode: String?, flutterResult: @escaping FlutterResult) {
+        let viewController = Zendesk.instance?.messaging?.messagingViewController(.showConversationList)
+        present(viewController, on: rootViewController, viewMode: viewMode, flutterResult: flutterResult)
+        print("\(self.TAG) - showConversationList")
+    }
+
+    func startNewConversation(rootViewController: UIViewController?, viewMode: String?, exitAction: String?, flutterResult: @escaping FlutterResult) {
+        let viewController = Zendesk.instance?.messaging?.messagingViewController(
+            .showNewConversation(exitAction: resolveExitAction(exitAction))
+        )
+        present(viewController, on: rootViewController, viewMode: viewMode, flutterResult: flutterResult)
+        print("\(self.TAG) - startNewConversation")
+    }
+
+    private func resolveExitAction(_ exitAction: String?) -> ZendeskSDK.ExitAction {
+        exitAction == "return_to_conversation_list" ? .returnToConversationList : .close
+    }
+
+    private func presentationStyle(for viewMode: String?) -> UIModalPresentationStyle {
+        switch viewMode {
+        case "fullscreen": return .fullScreen
+        case "sheet", "pageSheet": return .pageSheet
+        case "formSheet": return .formSheet
+        default: return .automatic
+        }
+    }
+
+    private func present(_ viewController: UIViewController?, on rootViewController: UIViewController?, viewMode: String?, readOnly: Bool = false, flutterResult: @escaping FlutterResult) {
+        guard let viewController = viewController else {
             print("\(self.TAG) - Unable to create Zendesk messaging view controller")
             flutterResult(FlutterError(
                 code: "show_error",
@@ -72,133 +129,179 @@ public class ZendeskMessaging: NSObject {
         }
 
         let navController = UINavigationController(rootViewController: viewController)
+        navController.modalPresentationStyle = presentationStyle(for: viewMode)
+        messagingNavController = navController
+
+        let presentMessaging = {
+            rootViewController.present(navController, animated: true) { [weak self, weak navController] in
+                if readOnly, let navController = navController {
+                    self?.forceHideComposerContinuously(in: navController)
+                }
+            }
+        }
 
         DispatchQueue.main.async {
             if let presentedVC = rootViewController.presentedViewController {
-                if presentedVC !== navController {
-                    presentedVC.dismiss(animated: true) {
-                        rootViewController.present(navController, animated: true, completion: nil)
-                    }
-                } else {
-                    print("\(self.TAG) - Zendesk messaging view controller is already presented")
-                }
+                presentedVC.dismiss(animated: true, completion: presentMessaging)
             } else {
-                rootViewController.present(navController, animated: true, completion: nil)
+                presentMessaging()
             }
             flutterResult(nil)
         }
-        print("\(self.TAG) - show")
     }
 
-    func showConversation(conversationId: String, rootViewController: UIViewController?, flutterResult: @escaping FlutterResult) {
-        guard let viewController = Zendesk.instance?.messaging?.messagingViewController(
-            .showConversation(conversationId: conversationId, exitAction: .returnToConversationList)
-        ) else {
-            print("\(self.TAG) - Unable to create Zendesk messaging view controller for conversation")
-            flutterResult(FlutterError(
-                code: "show_error",
-                message: "Unable to create Zendesk messaging view controller for conversation",
-                details: nil)
-            )
+    // Hides the composer so a closed conversation stays read-only.
+    private func forceHideComposerContinuously(in vc: UIViewController) {
+        // Immediate attempt
+        retryReadOnly(in: vc, attemptsLeft: 50)
+
+        // Re-apply every second while the screen is alive; the SDK can re-layout it
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self, weak vc] in
+            guard let self = self, let vc = vc else { return }
+            self.forceHideComposerContinuously(in: vc)
+        }
+    }
+    // MARK: - Composer Hiding
+    //
+    // The Zendesk SDK's internal framework determines which UIKit input type
+    // backs the composer text field:
+    //
+    //   • Older UIKit-based SDK  →  UITextView  (isEditable = true)
+    //   • Newer SwiftUI-based SDK → UITextField  (SwiftUI TextField renders
+    //                               through UITextField, not UITextView)
+    //
+    // We try all three strategies in order, then give up gracefully:
+    //   1. UITextField        — SwiftUI path (most common in current SDK)
+    //   2. UITextView         — UIKit path (older SDK builds)
+    //   3. Position-based     — last resort; finds the bottommost small
+    //                           interactive view without caring about type
+
+    private func retryReadOnly(in vc: UIViewController, attemptsLeft: Int) {
+        guard attemptsLeft > 0 else {
+            print("[ZendeskMessaging] retryReadOnly — gave up after all attempts")
             return
         }
-        guard let rootViewController = rootViewController else {
-            print("\(self.TAG) - Root view controller is nil")
-            flutterResult(FlutterError(
-                code: "show_error",
-                message: "Root view controller is nil",
-                details: nil)
-            )
-            return
+        if tryReadOnly(in: vc) { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + ZendeskMessaging.composerHideRetryInterval) { [weak self, weak vc] in
+            guard let self, let vc else { return }
+            self.retryReadOnly(in: vc, attemptsLeft: attemptsLeft - 1)
         }
-
-        let navController = UINavigationController(rootViewController: viewController)
-
-        DispatchQueue.main.async {
-            if let presentedVC = rootViewController.presentedViewController {
-                presentedVC.dismiss(animated: true) {
-                    rootViewController.present(navController, animated: true, completion: nil)
-                }
-            } else {
-                rootViewController.present(navController, animated: true, completion: nil)
-            }
-            flutterResult(nil)
-        }
-        print("\(self.TAG) - showConversation: \(conversationId)")
     }
 
-    func showConversationList(rootViewController: UIViewController?, flutterResult: @escaping FlutterResult) {
-        guard let viewController = Zendesk.instance?.messaging?.messagingViewController(
-            .showConversationList
-        ) else {
-            print("\(self.TAG) - Unable to create Zendesk conversation list view controller")
-            flutterResult(FlutterError(
-                code: "show_error",
-                message: "Unable to create Zendesk conversation list view controller",
-                details: nil)
-            )
-            return
+    /// Searches [vc] and every descendant VC depth-first.
+    /// Returns `true` when the composer bar is found and hidden.
+    @discardableResult
+    private func tryReadOnly(in vc: UIViewController) -> Bool {
+        if applyReadOnly(to: vc.view, vc: vc) { return true }
+        for child in vc.children {
+            if tryReadOnly(in: child) { return true }
         }
-        guard let rootViewController = rootViewController else {
-            print("\(self.TAG) - Root view controller is nil")
-            flutterResult(FlutterError(
-                code: "show_error",
-                message: "Root view controller is nil",
-                details: nil)
-            )
-            return
-        }
-
-        let navController = UINavigationController(rootViewController: viewController)
-
-        DispatchQueue.main.async {
-            if let presentedVC = rootViewController.presentedViewController {
-                presentedVC.dismiss(animated: true) {
-                    rootViewController.present(navController, animated: true, completion: nil)
-                }
-            } else {
-                rootViewController.present(navController, animated: true, completion: nil)
-            }
-            flutterResult(nil)
-        }
-        print("\(self.TAG) - showConversationList")
+        return false
     }
 
-    func startNewConversation(rootViewController: UIViewController?, flutterResult: @escaping FlutterResult) {
-        guard let viewController = Zendesk.instance?.messaging?.messagingViewController(
-            .showNewConversation(exitAction: .returnToConversationList)
-        ) else {
-            print("\(self.TAG) - Unable to create Zendesk new conversation view controller")
-            flutterResult(FlutterError(
-                code: "show_error",
-                message: "Unable to create Zendesk new conversation view controller",
-                details: nil)
-            )
-            return
+    /// Runs all three hiding strategies against [rootView].
+    private func applyReadOnly(to rootView: UIView, vc: UIViewController) -> Bool {
+        // Strategy 1 – UITextField (SwiftUI / newer Zendesk SDK)
+        if let field = findFirstTextField(in: rootView) {
+            print("[ZendeskMessaging] strategy=UITextField in \(type(of: vc))")
+            return hideComposerContainer(of: field, rootView: rootView)
         }
-        guard let rootViewController = rootViewController else {
-            print("\(self.TAG) - Root view controller is nil")
-            flutterResult(FlutterError(
-                code: "show_error",
-                message: "Root view controller is nil",
-                details: nil)
-            )
-            return
+        // Strategy 2 – UITextView isEditable (UIKit / older SDK)
+        if let tv = findFirstEditableTextView(in: rootView) {
+            print("[ZendeskMessaging] strategy=UITextView in \(type(of: vc))")
+            return hideComposerContainer(of: tv, rootView: rootView)
         }
+        // Strategy 3 – position-based: bottom-most small interactive view
+        if let bottomView = findBottomComposerView(in: rootView) {
+            print("[ZendeskMessaging] strategy=positionBased \(type(of: bottomView)) h=\(Int(bottomView.bounds.height))")
+            bottomView.alpha = 0
+            bottomView.isUserInteractionEnabled = false
+            return true
+        }
+        return false
+    }
 
-        let navController = UINavigationController(rootViewController: viewController)
+    /// Hides the composer container that directly owns [inputView].
+    /// If that container is suspiciously tall (> 45 % of rootView height),
+    /// climbs one level higher. Uses alpha + disabling interaction instead of
+    /// isHidden so that any SDK-driven layout updates have no visual effect.
+    @discardableResult
+    private func hideComposerContainer(of inputView: UIView, rootView: UIView) -> Bool {
+        guard let container = inputView.superview else { return false }
+        let rootH = rootView.bounds.height
+        let target: UIView
+        if rootH > 0 && container.bounds.height > rootH * 0.45 {
+            target = container.superview ?? container
+        } else {
+            target = container
+        }
+        target.alpha = 0
+        target.isUserInteractionEnabled = false
+        print("[ZendeskMessaging] hideComposerContainer — hid \(type(of: target)) h=\(Int(target.bounds.height))")
+        return true
+    }
 
-        DispatchQueue.main.async {
-            if let presentedVC = rootViewController.presentedViewController {
-                presentedVC.dismiss(animated: true) {
-                    rootViewController.present(navController, animated: true, completion: nil)
+    // MARK: - View Search Helpers
+
+    /// Depth-first search: first UITextField anywhere in the subtree.
+    private func findFirstTextField(in view: UIView) -> UITextField? {
+        if let tf = view as? UITextField { return tf }
+        for sub in view.subviews {
+            if let found = findFirstTextField(in: sub) { return found }
+        }
+        return nil
+    }
+
+    /// Depth-first search: first UITextView with isEditable == true.
+    private func findFirstEditableTextView(in view: UIView) -> UITextView? {
+        if let tv = view as? UITextView, tv.isEditable { return tv }
+        for sub in view.subviews {
+            if let found = findFirstEditableTextView(in: sub) { return found }
+        }
+        return nil
+    }
+
+    /// Position-based fallback: returns the view whose frame (in rootView
+    /// coordinates) has the highest minY, is less than 45 % of rootView's
+    /// height, is at least 20 pt tall, interactive, and visible.
+    private func findBottomComposerView(in rootView: UIView) -> UIView? {
+        let rootH = rootView.bounds.height
+        guard rootH > 0 else { return nil }
+
+        var best: UIView?
+        var bestMinY: CGFloat = -1
+
+        func visit(_ view: UIView) {
+            guard view !== rootView,
+            !view.isHidden,
+            view.alpha > 0,
+            view.isUserInteractionEnabled else { return }
+
+            let frame = rootView.convert(view.bounds, from: view)
+            let h = frame.height
+
+            if h > 20 && h < rootH * 0.45 && frame.minY > rootH * 0.55 {
+                if frame.minY > bestMinY {
+                    bestMinY = frame.minY
+                    best = view
                 }
-            } else {
-                rootViewController.present(navController, animated: true, completion: nil)
             }
-            flutterResult(nil)
+            view.subviews.forEach { visit($0) }
         }
-        print("\(self.TAG) - startNewConversation")
+        visit(rootView)
+        return best
+    }
+
+    // Zendesk only pushes while it sees the user offline. With the chat still on
+    // screen the SDK keeps its realtime connection, which iOS drops silently on
+    // suspend/kill, so replies are never pushed. Closing the chat disconnects it.
+    @objc private func dismissMessagingOnBackground() {
+        guard let navController = messagingNavController, navController.presentingViewController != nil else {
+            return
+        }
+        navController.dismiss(animated: false)
+        messagingNavController = nil
+        print("\(self.TAG) - messaging dismissed on background")
     }
 
     func setConversationTags(tags: [String]) {
@@ -287,8 +390,7 @@ public class ZendeskMessaging: NSObject {
     }
 
     func getConnectionStatus() -> String {
-        // Connection status is obtained from events
-        return "unknown"
+        return lastConnectionStatus
     }
 
     func listenMessageCountChanged() {
@@ -341,6 +443,7 @@ public class ZendeskMessaging: NSObject {
 
         case let .connectionStatusChanged(connectionStatus):
             let statusString = connectionStatus.stringValue
+            self.lastConnectionStatus = statusString
             self.channel.invokeMethod(
                 Self.zendeskEvent,
                 arguments: [

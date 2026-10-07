@@ -52,7 +52,9 @@ library zendesk_messaging;
 // Enums
 export 'src/enums/authentication_type.dart';
 export 'src/enums/connection_status.dart';
+export 'src/enums/exit_action.dart';
 export 'src/enums/push_responsibility.dart';
+export 'src/enums/view_mode.dart';
 
 // Models
 export 'src/models/zendesk_login_response.dart';

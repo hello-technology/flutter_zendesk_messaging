@@ -3,3 +3,5 @@ library;
 
 export 'authentication_type.dart';
 export 'connection_status.dart';
+export 'exit_action.dart';
+export 'view_mode.dart';

@@ -1,6 +1,15 @@
 package com.chyiiiiiiiiiiiiii.zendesk_messaging
 
+import android.app.Activity
+import android.app.Application
 import android.content.Context
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
 import io.flutter.plugin.common.MethodChannel
 import zendesk.android.Zendesk
 import zendesk.android.ZendeskUser
@@ -21,9 +30,15 @@ class ZendeskMessaging(
         // Method channel event keys
         const val EVENT_UNREAD_MESSAGES = "unread_messages"
         const val EVENT_ZENDESK_EVENT = "zendesk_event"
+
+        private const val COMPOSER_HIDE_MAX_RETRIES = 20
+        private const val COMPOSER_HIDE_RETRY_DELAY_MS = 150L
     }
 
     // Event listener for all Zendesk events
+    private var eventListenerRegistered = false
+    private var lastConnectionStatus = "unknown"
+
     private val zendeskEventListener = ZendeskEventListener { zendeskEvent ->
         handleZendeskEvent(zendeskEvent)
     }
@@ -74,12 +89,14 @@ class ZendeskMessaging(
             }
 
             is ZendeskEvent.ConnectionStatusChanged -> {
+                // CONNECTED_REALTIME -> "connectedrealtime", the form Dart parses
+                lastConnectionStatus = zendeskEvent.connectionStatus.name.lowercase().replace("_", "")
                 channel.invokeMethod(
                     EVENT_ZENDESK_EVENT,
                     mapOf(
                         "type" to "connectionStatusChanged",
                         "timestamp" to System.currentTimeMillis(),
-                        "status" to zendeskEvent.connectionStatus.name.lowercase()
+                        "status" to lastConnectionStatus
                     )
                 )
             }
@@ -343,43 +360,153 @@ class ZendeskMessaging(
     }
 
     fun invalidate() {
-        Zendesk.instance.removeEventListener(zendeskEventListener)
+        removeEventListener()
         Zendesk.invalidate()
+        lastConnectionStatus = "unknown"
         plugin.isInitialized = false
         plugin.isLoggedIn = false
         println("$TAG - invalidated")
     }
 
-    fun show() {
+    fun show(exitAction: String?) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
-            MessagingScreen.MostRecentActiveConversation()
+            activity,
+            MessagingScreen.MostRecentActiveConversation(onExit = resolveExitAction(exitAction))
         )
         println("$TAG - show")
     }
 
-    fun showConversation(conversationId: String) {
+    fun showConversation(conversationId: String, exitAction: String?, isClosed: Boolean) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
-            MessagingScreen.Conversation(id = conversationId)
+            activity,
+            MessagingScreen.Conversation(id = conversationId, onExit = resolveExitAction(exitAction))
         )
-        println("$TAG - showConversation: $conversationId")
+        if (isClosed) {
+            scheduleComposerHide(activity.application)
+        }
+        println("$TAG - showConversation: $conversationId (isClosed: $isClosed)")
     }
 
     fun showConversationList() {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
+            activity,
             MessagingScreen.ConversationsList
         )
         println("$TAG - showConversationList")
     }
 
-    fun startNewConversation() {
+    fun startNewConversation(exitAction: String?) {
+        val activity = plugin.activity ?: return
         Zendesk.instance.messaging.showMessaging(
-            plugin.activity!!,
-            MessagingScreen.NewConversation()
+            activity,
+            MessagingScreen.NewConversation(onExit = resolveExitAction(exitAction))
         )
         println("$TAG - startNewConversation")
+    }
+
+    private fun resolveExitAction(exitAction: String?): MessagingScreen.ExitAction =
+        if (exitAction == "return_to_conversation_list") {
+            MessagingScreen.ExitAction.ReturnToConversationList
+        } else {
+            MessagingScreen.ExitAction.Close
+        }
+
+    // Hides the composer so a closed conversation stays read-only.
+
+    /**
+     * Registers a one-shot [Application.ActivityLifecycleCallbacks] that fires
+     * when the next Zendesk Activity is resumed.  At that point the window is
+     * guaranteed to exist, so we start a retry loop that keeps trying to find
+     * and hide the composer until it succeeds or retries are exhausted.
+     */
+    private fun scheduleComposerHide(app: Application) {
+        app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityResumed(a: Activity) {
+                // Unregister immediately — one-shot only.
+                app.unregisterActivityLifecycleCallbacks(this)
+                retryHideComposer(a, COMPOSER_HIDE_MAX_RETRIES)
+            }
+
+            override fun onActivityCreated(a: Activity, b: Bundle?) {}
+            override fun onActivityStarted(a: Activity) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivityStopped(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
+            override fun onActivityDestroyed(a: Activity) {}
+        })
+    }
+
+    /**
+     * Tries to hide the composer in [activity].  If the view tree is not yet
+     * ready (EditText not found), schedules another attempt after
+     * [COMPOSER_HIDE_RETRY_DELAY_MS] ms, up to [attemptsLeft] more times.
+     */
+    private fun retryHideComposer(activity: Activity, attemptsLeft: Int) {
+        if (attemptsLeft <= 0) {
+            Log.w(TAG, "retryHideComposer — gave up after all attempts")
+            return
+        }
+        val decorView = activity.window?.decorView ?: return
+        decorView.post {
+            val hidden = tryHideComposer(activity)
+            if (!hidden) {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    retryHideComposer(activity, attemptsLeft - 1)
+                }, COMPOSER_HIDE_RETRY_DELAY_MS)
+            }
+        }
+    }
+
+    /**
+     * Attempts a single hide pass.  Returns `true` if the composer was found
+     * and hidden, `false` if not found yet.
+     */
+    private fun tryHideComposer(activity: Activity): Boolean {
+        return try {
+            val contentRoot = activity.window?.decorView
+                ?.findViewById<ViewGroup>(android.R.id.content) ?: return false
+
+            val editText = findFirstEditText(contentRoot) ?: return false
+
+            // Walk up to a direct child of contentRoot so we hide the full
+            // composer bar, not just the EditText itself.
+            var candidate: View = editText
+            while (candidate.parent != null && candidate.parent !== contentRoot) {
+                candidate = candidate.parent as? View ?: break
+            }
+
+            // Only hide if the candidate sits in the bottom half of the screen
+            // (guards against accidentally hiding a message input in the middle).
+            val location = IntArray(2)
+            candidate.getLocationInWindow(location)
+            val screenMidY = contentRoot.height / 2
+
+            if (screenMidY > 0 && location[1] > screenMidY) {
+                candidate.visibility = View.GONE
+            } else {
+                // Fallback: hide the EditText's immediate parent container.
+                (editText.parent as? View)?.visibility = View.GONE
+            }
+
+            Log.d(TAG, "tryHideComposer — composer hidden successfully")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "tryHideComposer — error: ${e.message}")
+            false
+        }
+    }
+
+    private fun findFirstEditText(view: View): EditText? {
+        if (view is EditText) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findFirstEditText(view.getChildAt(i))?.let { return it }
+            }
+        }
+        return null
     }
 
     fun getUnreadMessageCount(): Int =
@@ -441,7 +568,7 @@ class ZendeskMessaging(
                 result.error("logout_error", error.message, null)
             }
         )
-        Zendesk.instance.removeEventListener(zendeskEventListener)
+        removeEventListener()
     }
 
     fun getCurrentUser(result: MethodChannel.Result) {
@@ -476,20 +603,19 @@ class ZendeskMessaging(
         }
     }
 
-    fun getConnectionStatus(): String {
-        return try {
-            // Connection status is obtained from events, return current known state
-            "unknown"
-        } catch (error: Throwable) {
-            println("$TAG - getConnectionStatus error: ${error.message}")
-            "unknown"
-        }
-    }
+    fun getConnectionStatus(): String = lastConnectionStatus
 
     fun listenMessageCountChanged() {
-        // To add the event listener to your Zendesk instance:
+        if (eventListenerRegistered) return
         Zendesk.instance.addEventListener(zendeskEventListener)
+        eventListenerRegistered = true
         println("$TAG - listenMessageCountChanged - Event listener added")
+    }
+
+    private fun removeEventListener() {
+        if (!eventListenerRegistered) return
+        Zendesk.instance.removeEventListener(zendeskEventListener)
+        eventListenerRegistered = false
     }
 
     fun setConversationFields(fields: Map<String, String>) {

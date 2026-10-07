@@ -41,7 +41,7 @@ class ZendeskMessagingPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     reportNotInitializedFlutterError(result)
                     return
                 }
-                zendeskMessaging.show()
+                zendeskMessaging.show(call.argument<String>("exitAction"))
                 result.success(null)
             }
 
@@ -56,7 +56,11 @@ class ZendeskMessagingPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.error("invalid_argument", "conversationId is required", null)
                     return
                 }
-                zendeskMessaging.showConversation(conversationId)
+                zendeskMessaging.showConversation(
+                    conversationId,
+                    call.argument<String>("exitAction"),
+                    call.argument<Boolean>("isClosed") ?: false,
+                )
                 result.success(null)
             }
 
@@ -76,7 +80,7 @@ class ZendeskMessagingPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     reportNotInitializedFlutterError(result)
                     return
                 }
-                zendeskMessaging.startNewConversation()
+                zendeskMessaging.startNewConversation(call.argument<String>("exitAction"))
                 result.success(null)
             }
 

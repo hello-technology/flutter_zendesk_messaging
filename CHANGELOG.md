@@ -1,3 +1,14 @@
+## 3.6.0 (HelloApp fork)
+
+Upstream 3.6.0 plus:
+
+- `show`, `showConversation`, `showConversationList` and `startNewConversation` accept `viewMode` (iOS presentation style) and `exitAction` (`close` / `returnToConversationList`).
+- `showConversation(isClosed: true)` hides the composer so a closed conversation is read-only (iOS and Android).
+- iOS: the messaging screen is dismissed when the app enters the background, so Zendesk sees the user offline and sends push notifications.
+- `getConnectionStatus()` returns the last status reported by the SDK instead of `unknown`; Android realtime statuses now parse in Dart.
+- Android: the event listener is registered once, and the messaging screens no longer crash when no Activity is attached.
+- `ZendeskMessaging.dispose()` closes the event streams.
+
 ## 3.6.0
 
 ### Behavior Changes

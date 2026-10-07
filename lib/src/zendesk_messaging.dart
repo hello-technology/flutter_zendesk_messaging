@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'enums/connection_status.dart';
+import 'enums/exit_action.dart';
 import 'enums/push_responsibility.dart';
+import 'enums/view_mode.dart';
 import 'events/event_parser.dart';
 import 'events/zendesk_event.dart';
 import 'models/zendesk_login_response.dart';
@@ -194,9 +196,15 @@ class ZendeskMessaging {
   /// navigates to the most recent conversation.
   ///
   /// Throws [PlatformException] if the UI cannot be shown.
-  static Future<void> show() async {
+  static Future<void> show({
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.close,
+  }) async {
     try {
-      await _channel.invokeMethod('show');
+      await _channel.invokeMethod('show', {
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+      });
       ZendeskMessagingConfig.log('Messaging UI shown');
     } catch (e, stackTrace) {
       ZendeskMessagingConfig.logError(
@@ -222,7 +230,14 @@ class ZendeskMessaging {
   ///
   /// Throws [ArgumentError] if conversationId is empty.
   /// Throws [PlatformException] if the conversation cannot be shown.
-  static Future<void> showConversation(String conversationId) async {
+  ///
+  /// [isClosed] hides the composer so a closed conversation is read-only.
+  static Future<void> showConversation(
+    String conversationId, {
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.returnToConversationList,
+    bool isClosed = false,
+  }) async {
     if (conversationId.isEmpty) {
       throw ArgumentError('conversationId cannot be empty');
     }
@@ -230,6 +245,9 @@ class ZendeskMessaging {
     try {
       await _channel.invokeMethod('showConversation', {
         'conversationId': conversationId,
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+        'isClosed': isClosed,
       });
       ZendeskMessagingConfig.log('Showing conversation: $conversationId');
     } catch (e, stackTrace) {
@@ -248,9 +266,13 @@ class ZendeskMessaging {
   /// Requires multi-conversations to be enabled in Zendesk Admin Center.
   ///
   /// Throws [PlatformException] if the list cannot be shown.
-  static Future<void> showConversationList() async {
+  static Future<void> showConversationList({
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+  }) async {
     try {
-      await _channel.invokeMethod('showConversationList');
+      await _channel.invokeMethod('showConversationList', {
+        'viewMode': viewMode.nativeValue,
+      });
       ZendeskMessagingConfig.log('Conversation list shown');
     } catch (e, stackTrace) {
       ZendeskMessagingConfig.logError(
@@ -268,9 +290,15 @@ class ZendeskMessaging {
   /// Requires multi-conversations to be enabled in Zendesk Admin Center.
   ///
   /// Throws [PlatformException] if a new conversation cannot be started.
-  static Future<void> startNewConversation() async {
+  static Future<void> startNewConversation({
+    ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.close,
+  }) async {
     try {
-      await _channel.invokeMethod('startNewConversation');
+      await _channel.invokeMethod('startNewConversation', {
+        'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
+      });
       ZendeskMessagingConfig.log('New conversation started');
     } catch (e, stackTrace) {
       ZendeskMessagingConfig.logError(
@@ -852,5 +880,14 @@ class ZendeskMessaging {
           }
         }
     }
+  }
+
+  /// Closes the event streams. Call only when the plugin is no longer used.
+  static void dispose() {
+    if (!_eventController.isClosed) _eventController.close();
+    if (!_unreadMessagesCountController.isClosed) {
+      _unreadMessagesCountController.close();
+    }
+    ZendeskMessagingConfig.log('Streams disposed');
   }
 }

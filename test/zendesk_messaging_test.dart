@@ -147,6 +147,41 @@ void main() {
       expect(log, hasLength(1));
       expect(log.first.method, 'startNewConversation');
     });
+
+    test('show sends fullscreen and close by default', () async {
+      await ZendeskMessaging.show();
+
+      expect(log.first.arguments['viewMode'], 'fullscreen');
+      expect(log.first.arguments['exitAction'], 'close');
+    });
+
+    test('showConversation sends view mode, exit action and isClosed', () async {
+      await ZendeskMessaging.showConversation(
+        'conv_123',
+        viewMode: ZendeskViewMode.pageSheet,
+        exitAction: ZendeskExitAction.close,
+        isClosed: true,
+      );
+
+      expect(log.first.arguments['viewMode'], 'pageSheet');
+      expect(log.first.arguments['exitAction'], 'close');
+      expect(log.first.arguments['isClosed'], isTrue);
+    });
+
+    test('showConversation is writable and returns to the list by default', () async {
+      await ZendeskMessaging.showConversation('conv_123');
+
+      expect(log.first.arguments['isClosed'], isFalse);
+      expect(log.first.arguments['exitAction'], 'return_to_conversation_list');
+    });
+
+    test('startNewConversation sends exit action', () async {
+      await ZendeskMessaging.startNewConversation(
+        exitAction: ZendeskExitAction.returnToConversationList,
+      );
+
+      expect(log.first.arguments['exitAction'], 'return_to_conversation_list');
+    });
   });
 
   group('Message Count', () {

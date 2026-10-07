@@ -43,7 +43,12 @@ public class ZendeskMessagingPlugin: NSObject, FlutterPlugin {
                 reportNotInitializedFlutterError(result: result)
                 return
             }
-            zendeskMessaging?.show(rootViewController: getRootViewController(), flutterResult: result)
+            zendeskMessaging?.show(
+                rootViewController: getRootViewController(),
+                viewMode: arguments?["viewMode"] as? String,
+                exitAction: arguments?["exitAction"] as? String,
+                flutterResult: result
+            )
 
         case "showConversation":
             if !isInitialized {
@@ -55,7 +60,14 @@ public class ZendeskMessagingPlugin: NSObject, FlutterPlugin {
                 result(FlutterError(code: "invalid_argument", message: "conversationId is required", details: nil))
                 return
             }
-            zendeskMessaging?.showConversation(conversationId: conversationId, rootViewController: getRootViewController(), flutterResult: result)
+            zendeskMessaging?.showConversation(
+                conversationId: conversationId,
+                rootViewController: getRootViewController(),
+                viewMode: arguments?["viewMode"] as? String,
+                exitAction: arguments?["exitAction"] as? String,
+                isClosed: arguments?["isClosed"] as? Bool ?? false,
+                flutterResult: result
+            )
 
         case "showConversationList":
             if !isInitialized {
@@ -63,7 +75,11 @@ public class ZendeskMessagingPlugin: NSObject, FlutterPlugin {
                 reportNotInitializedFlutterError(result: result)
                 return
             }
-            zendeskMessaging?.showConversationList(rootViewController: getRootViewController(), flutterResult: result)
+            zendeskMessaging?.showConversationList(
+                rootViewController: getRootViewController(),
+                viewMode: arguments?["viewMode"] as? String,
+                flutterResult: result
+            )
 
         case "startNewConversation":
             if !isInitialized {
@@ -71,7 +87,12 @@ public class ZendeskMessagingPlugin: NSObject, FlutterPlugin {
                 reportNotInitializedFlutterError(result: result)
                 return
             }
-            zendeskMessaging?.startNewConversation(rootViewController: getRootViewController(), flutterResult: result)
+            zendeskMessaging?.startNewConversation(
+                rootViewController: getRootViewController(),
+                viewMode: arguments?["viewMode"] as? String,
+                exitAction: arguments?["exitAction"] as? String,
+                flutterResult: result
+            )
 
         case "loginUser":
             if !isInitialized {
