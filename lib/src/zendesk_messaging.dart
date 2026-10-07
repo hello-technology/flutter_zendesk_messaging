@@ -268,10 +268,12 @@ class ZendeskMessaging {
   /// Throws [PlatformException] if the list cannot be shown.
   static Future<void> showConversationList({
     ZendeskViewMode viewMode = ZendeskViewMode.fullscreen,
+    ZendeskExitAction exitAction = ZendeskExitAction.close,
   }) async {
     try {
       await _channel.invokeMethod('showConversationList', {
         'viewMode': viewMode.nativeValue,
+        'exitAction': exitAction.nativeValue,
       });
       ZendeskMessagingConfig.log('Conversation list shown');
     } catch (e, stackTrace) {
