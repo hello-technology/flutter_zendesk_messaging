@@ -30,7 +30,9 @@ apply plugin: 'com.android.library'
 // AGP < 9 while supporting the AGP 9+ toolchain.
 // https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-plugin-authors
 def agpMajor = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')[0] as int
-if (agpMajor < 9) {
+// Apps on AGP 9 can still opt out of built-in Kotlin with android.builtInKotlin=false.
+def builtInKotlinDisabled = project.findProperty('android.builtInKotlin')?.toString() == 'false'
+if (agpMajor < 9 || builtInKotlinDisabled) {
     apply plugin: 'kotlin-android'
 }
 

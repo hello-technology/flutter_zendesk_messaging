@@ -1,3 +1,7 @@
+## 3.6.2 (HelloApp fork)
+
+- Android: apply the Kotlin plugin when the app runs AGP 9 with `android.builtInKotlin=false`; otherwise the `kotlin {}` block fails to evaluate.
+
 ## 3.6.1 (HelloApp fork)
 
 Upstream 3.6.0 plus:
